@@ -314,13 +314,13 @@ class SensorData(BaseClass):
     is_FGS: bool = field(init=True, default=None)
     loading_step: int = field(init=True, default=0) # internal state, see Transit
     
-    data: np.ndarray = field(init=True, default=None) 
+    data: cp.ndarray = field(init=True, default=None) 
     # 1st dimension: time
     # 2nd dimension: wavelength, but only if in step 4
     # further dimensions (0, 1, or 2): sensor coordinates
-    times: np.ndarray = field(init=True, default=None) # time associated with dimension 1 above, in seconds
-    time_intervals: np.ndarray = field(init=True, default=None) # time integration lengths, same size as above, in seconds
-    wavelengths: np.ndarray = field(init=True, default=None) # wavelengths associated with dimension 2 above, in um
+    times: cp.ndarray = field(init=True, default=None) # time associated with dimension 1 above, in seconds
+    time_intervals: cp.ndarray = field(init=True, default=None) # time integration lengths, same size as above, in seconds
+    wavelengths: cp.ndarray = field(init=True, default=None) # wavelengths associated with dimension 2 above, in um
         
     
     def _check_constraints(self):
