@@ -45,12 +45,12 @@ verbosity = 1
 match env:
     case 'local':
         data_dir = '/mnt/d/ariel2/data/'
-        temp_dir = '/mnt/d/ariel2/temp'             
+        temp_dir = '/mnt/d/ariel2/temp/'             
         code_dir = '/mnt/d/ariel2/code/core/' 
     case 'kaggle':
-        data_dir = 'XXX'
+        data_dir = '/kaggle/input/ariel-data-challenge-2025/'
         temp_dir = '/temp/'             
-        code_dir = 'XXX'         
+        code_dir = '/kaggle/input/my-ariel2-library/'         
 os.makedirs(temp_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
@@ -179,20 +179,84 @@ def rms(array):
     return np.sqrt(np.mean(array**2))
 
 def to_cpu(array):
-    if isinstance(array, cp.array):
+    if isinstance(array, cp.ndarray):
         return array.get()
     else:
         return array
 
 def to_gpu(array):
-    if isinstance(array, cp.array):
+    if isinstance(array, cp.ndarray):
         return array
     else:
         return cp.array(array)
     
+'''
+Sanity checks and error handling
+'''
+
+class ArielException(Exception):
+    # Exception class for failed sanity checks
+    code = 0
+    def __init__(self,code,message):
+        self.code = code
+        self.message = message
+
+score_base = 0.264
+score_noise = 0.121
+noise_fac_used = 1.5
+error_code_conversion = 10
+def raise_error_code(exception):    
+    if not env=='kaggle':
+        raise exception
+    print('ARIEL exception ', exception.code, exception.message)
+    assert(exception.code>=0)
+    noise_fac = np.sqrt(exception.code/error_code_conversion)
+    dill_save(temp_dir + '/noise_fac.pickle', noise_fac)
+    import subprocess
+    import sys
+    subprocess.run('jupyter nbconvert --execute --debug --to html /kaggle/input/my-ariel2-library/reference_submission.ipynb', shell=True)
+    
+def error_code_from_score(score):
+    return (score_base-score)/(score_base-score_noise)*noise_fac_used**2*error_code_conversion
+
+sanity_checks_active = True # Whether to throw errors if we see weird things in the data
+sanity_checks_without_errors = False # Perform the sanity checks above but don't throw errors
+sanity_checks = dict() # Global object to keep track of all sanity checks. 
+    
+# Class to keep track of sanity checks
+class SanityCheckValue:
+    def __init__(self, name, code, limit):
+        self.seen = [np.inf, -np.inf]
+        self.limit = limit
+        self.name = name
+        self.code = code
+
+# Perform a sanity check; this function is used throughout the data loading and modeling functions.
 def sanity_check(f,to_check,name,code,limit):
-    pass
-sanity_checks_active = True
+    # f: function to apply to to_check
+    # to_check: value to check
+    # name: label for the sanity check
+    # code: error code number to give
+    # limit: 2-element array containing lower and upper limit
+    if sanity_checks_active:
+        if not name in sanity_checks:
+            sanity_checks[name] = SanityCheckValue(name,code,limit)
+        value = float(to_cpu(f(to_check)))
+        if not sanity_checks_without_errors:
+            if value > limit[1]:
+                raise ArielException(code+0.5,name + ' too high: ' + str(value) + '>' + str(limit[1]))
+            if value < limit[0]:
+                raise ArielException(code,name + ' too low: ' + str(value) + '<' + str(limit[0]))
+        # Keep track of extreme values seen (helps in determining thresholds)
+        if sanity_checks[name].seen[0] > value:
+            sanity_checks[name].seen[0] = value
+        if sanity_checks[name].seen[1] < value:
+            sanity_checks[name].seen[1] = value
+
+# Show the minimum and miximum values seen for all sanity checks
+def print_sanity_checks():
+    for m in list(sanity_checks.keys()):
+        print(m, sanity_checks[m].seen, sanity_checks[m].limit, sanity_checks[m].code)
 
 '''
 Data definition and loading
@@ -273,7 +337,6 @@ class Planet(BaseClass):
 @dataclass
 class Transit(BaseClass):
     # Holds all relevant information for a single transit    
-    planet: Planet = field(init=True, default=None) # linkback
     observation_number: int = field(init=True, default=None) # how manieth transit is this
     loading_step: int = field(init=True, default=0) # internal state
     # 0: unloaded
@@ -292,7 +355,7 @@ class Transit(BaseClass):
             assert d.loading_step == self.loading_step
             d.check_constraints()
     
-    def load_to_step(self, target_step, loaders):
+    def load_to_step(self, target_step, planet, loaders):
         self.check_constraints()
         if target_step<self.loading_step:
             self.loading_step = 0
@@ -303,7 +366,7 @@ class Transit(BaseClass):
             loader.check_constraints()
         for ii in range(target_step - self.loading_step):
             for d,loader in zip(self.data, loaders):
-                loader.progress_one_step(d, self.planet, self.observation_number)
+                loader.progress_one_step(d, planet, self.observation_number)
             self.loading_step += 1
             self.check_constraints()
         assert self.loading_step == target_step
@@ -365,7 +428,7 @@ def load_data(planet_id, is_train):
     assert len(files)%4 == 0
     n_transits = len(files)//4
     for ii in range(n_transits):
-        data.transits.append(Transit(planet=data))
+        data.transits.append(Transit())
         data.transits[-1].observation_number = ii
     
     data.check_constraints()

@@ -85,15 +85,15 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def ADC_convert(signal, gain, offset):
             signal /= gain
             signal += self.adc_offset_sign * offset
-            kgs.sanity_check(lambda x:x, gain, 'gain', 1, [0.3, 3])                
-            kgs.sanity_check(lambda x:x, offset, 'offset', 1, [-3000, 3000])
+            kgs.sanity_check(lambda x:x, gain, 'gain', 1, [0.4, 0.5])                
+            kgs.sanity_check(lambda x:x, offset, 'offset', 2, [-1001, -999])
             return signal
 
         def mask_hot_dead(signal, dead, dark):
             hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
             if kgs.sanity_checks_active:
-                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 2, [0, 0.01])        
-                kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 2, [0, 0.01])      
+                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.015])        
+                kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.005])      
             if self.mask_hot:
                 signal[:, hot] = cp.nan
             if self.mask_dead:
@@ -103,19 +103,19 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def apply_linear_corr(lc,x):        
             result =  lc[0,:,:]+x*(lc[1,:,:]+x*(lc[2,:,:]+x*(lc[3,:,:]+x*(lc[4,:,:]+x*lc[5,:,:]))))
             if kgs.sanity_checks_active:
-                kgs.sanity_check(cp.nanmax, cp.abs(result-x), 'linear_corr_impact', 1, [0, 50000])
+                kgs.sanity_check(cp.nanmax, cp.abs(result-x), 'linear_corr_impact', 9, [0, 50000])
             return result
 
         def clean_dark(signal, dark, dt):    
             signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
-            kgs.sanity_check(cp.min, gain, 'dark_min', 1, [0.3, 3]) 
-            kgs.sanity_check(cp.max, gain, 'dark_max', 1, [0.3, 3])        
+            kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.0015, 0.004]) 
+            kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 0.02])        
             return signal
 
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
-            kgs.sanity_check(cp.min, flat, 'flat_min', 1, [-1, 1.5]) 
-            kgs.sanity_check(cp.max, flat, 'flat_max', 1, [0.7, 1.5])                
+            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7, 1.1]) 
+            kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2])                
             return signal
         
         # Load calibration data
