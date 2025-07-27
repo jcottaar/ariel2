@@ -403,7 +403,8 @@ class TransitLoader(BaseClass):
     load_raw_data: BaseClass = field(init=True, default=None) # must be callable
     apply_pixel_corrections: BaseClass = field(init=True, default=None) # must be callable
     apply_full_sensor_corrections: BaseClass = field(init=True, default=None) # must be callable
-    apply_binning: BaseClass = field(init=True, default=None) # must be callable
+    apply_time_binning: BaseClass = field(init=True, default=None) # must be callable
+    apply_wavelength_binning: BaseClass = field(init=True, default=None) # must be callable
     
     def progress_one_step(self, data, planet, observation_number):
         match data.loading_step:
@@ -414,7 +415,9 @@ class TransitLoader(BaseClass):
             case 2:
                 self.apply_full_sensor_corrections(data, planet, observation_number)
             case 3:
-                self.apply_binning(data, planet, observation_number)
+                self.apply_time_binning(data, planet, observation_number)
+            case 4:
+                self.apply_wavelength_binning(data, planet, observation_number)
             case _:
                 raise Exception('Wrong state')
         data.loading_step+=1

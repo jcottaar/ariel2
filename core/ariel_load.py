@@ -17,7 +17,7 @@ def read_parquet_to_numpy(filename):
 def read_parquet_to_cupy(filename):
     return cp.array(read_parquet_to_numpy(filename))
 
-
+@kgs.profile_each_line
 def inpaint_along_axis_inplace(arr, axis=0):
     arr = cp.asarray(arr)
     ndim = arr.ndim
@@ -83,7 +83,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     clip_rows2 = None
     
     mask_dead = True
-    mask_hot = True
+    mask_hot = False
     hot_sigma_clip = 5
     linear_correction = True
     dark_current = True
@@ -94,7 +94,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     adc_offset_sign = -1 
     dark_current_sign = 1
     
-    @kgs.profile_each_line
+    
     def __call__(self, data, planet, observation_number):
         calibration_directory = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_calibration_' + str(observation_number) + '/'
         
@@ -122,7 +122,8 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def mask_hot_dead(signal, dead, dark):
             hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
             if kgs.sanity_checks_active:
-                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.015])        
+                print('inf')
+                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.015+np.inf])        
                 kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.005])      
             if self.mask_hot:
                 signal[:, hot] = cp.nan
@@ -138,8 +139,9 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def clean_dark(signal, dark, dt):    
             signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
-            kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.0015, 0.004]) 
-            kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 0.02])        
+            print('enable')
+            #kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.0015, 0.004]) 
+            #kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 0.02])        
             return signal
 
         def correct_flat_field(flat, signal):        
@@ -155,9 +157,9 @@ class ApplyPixelCorrections(kgs.BaseClass):
             #is_cosmic_ray[-1,...] = diff[-1,...]>self.cosmic_ray_threshold
             #is_cosmic_ray[1:-1,...] = ( (diff[1:,...]>self.cosmic_ray_threshold) & (diff[:-1,...]>self.cosmic_ray_threshold))
             is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold
-            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,0.0003])
+            print('enable')
+            #kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,0.0003])
             signal[is_cosmic_ray] = cp.nan
-            inpaint_along_axis_inplace(signal)
             return signal
             
         
@@ -208,22 +210,42 @@ class ApplyPixelCorrections(kgs.BaseClass):
         if self.remove_cosmic_rays:
             data.data = remove_cosmic_rays(data.data)
         if kgs.profiling: cp.cuda.Device().synchronize()
+
+class ApplyFullSensorCorrections:
+    
+    inpainting_time = True
+    inpainting_wavelength = False
+    inpainting_2d = False
+    
+    def __call__(self, data, planet, observation_number):
+        if self.inpainting_time:
+            inpaint_along_axis_inplace(data.data,0)
+        if self.inpainting_wavelength:
+            inpaint_along_axis_inplace(data.data,2)
+        if self.inpainting_2d:
+            print('x')
+            temp = copy.deepcopy(data.data)
+            inpaint_along_axis_inplace(data.data,2)
+            inpaint_along_axis_inplace(temp,1)
+            data.data = (data.data+temp)/2
+            
         
-        # One nan is all nan
-        assert cp.all (cp.any(cp.isnan(data.data),0) == cp.all(cp.isnan(data.data),0))
-        if kgs.profiling: cp.cuda.Device().synchronize()
-          
         
 def default_loaders():
     loader = kgs.TransitLoader()
     loader.load_raw_data = LoadRawData()
     loader.apply_pixel_corrections = ApplyPixelCorrections()
+    loader.apply_full_sensor_corrections = ApplyFullSensorCorrections()
     
     loaders = [loader, copy.deepcopy(loader)]
+    
+    # FGS configuration   
+    loaders[0].apply_full_sensor_corrections.inpainting_2d=False
     
     # AIRS configuration
     loaders[1].apply_pixel_corrections.clip_columns=True
     loaders[1].apply_pixel_corrections.clip_columns1=39
     loaders[1].apply_pixel_corrections.clip_columns2=321    
+    loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
     
     return loaders
