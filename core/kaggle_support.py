@@ -178,6 +178,11 @@ def upload_kaggle_dataset(source):
 def rms(array):
     return np.sqrt(np.mean(array**2))
 
+def moving_average(a, n):
+    ret = np.cumsum(a, dtype=float, axis=0)
+    ret[n:, ...] -= ret[:-n, ...]
+    return ret[n - 1:, ...] / n
+
 def to_cpu(array):
     if isinstance(array, cp.ndarray):
         return array.get()
@@ -213,7 +218,6 @@ def raise_error_code(exception):
     noise_fac = np.sqrt(exception.code/error_code_conversion)
     dill_save(temp_dir + '/noise_fac.pickle', noise_fac)
     import subprocess
-    import sys
     subprocess.run('jupyter nbconvert --execute --debug --to html /kaggle/input/my-ariel2-library/reference_submission.ipynb', shell=True)
     
 def error_code_from_score(score):
@@ -343,7 +347,8 @@ class Transit(BaseClass):
     # 1: raw parquet loaded
     # 2: pixel level corrections up to correlated double sampling done
     # 3: full-sensor corrections done
-    # 4: wavelength and time binning done
+    # 4: time binning done
+    # 5: wavelength binning done
     data: list = field(init=True, default_factory = lambda:[SensorData(is_FGS=True), SensorData(is_FGS=False)]) # 0: FGS, 1: AIRS
     
     def _check_constraints(self):
@@ -379,7 +384,7 @@ class SensorData(BaseClass):
     
     data: cp.ndarray = field(init=True, default=None) 
     # 1st dimension: time
-    # 2nd dimension: wavelength, but only if in step 4
+    # 2nd dimension: wavelength, but only if in step 5
     # further dimensions (0, 1, or 2): sensor coordinates
     times: cp.ndarray = field(init=True, default=None) # time associated with dimension 1 above, in seconds
     time_intervals: cp.ndarray = field(init=True, default=None) # time integration lengths, same size as above, in seconds

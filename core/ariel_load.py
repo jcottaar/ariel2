@@ -17,6 +17,34 @@ def read_parquet_to_numpy(filename):
 def read_parquet_to_cupy(filename):
     return cp.array(read_parquet_to_numpy(filename))
 
+
+def inpaint_along_axis_inplace(arr, axis=0):
+    arr = cp.asarray(arr)
+    ndim = arr.ndim
+    T = arr.shape[axis]
+
+    # Move the interpolation axis to the front
+    arr_moved = cp.moveaxis(arr, axis, 0)  # shape (T, ...)
+    flat_arr = arr_moved.reshape(T, -1)    # shape (T, N)
+
+    nan_mask = cp.isnan(flat_arr)
+    needs_interp = cp.any(nan_mask, axis=0)
+
+    x = cp.arange(T)
+
+    for i in cp.where(needs_interp)[0]:
+        col = flat_arr[:, i]
+        valid_mask = ~cp.isnan(col)
+        valid_x = x[valid_mask]
+        valid_y = col[valid_mask]
+
+        if valid_x.size == 0:
+            flat_arr[:, i] = cp.nan
+        else:
+            flat_arr[:, i] = cp.interp(x, valid_x, valid_y)
+
+    # No need to move axes back — arr was modified in-place through views
+
 @dataclass
 class LoadRawData(kgs.BaseClass):   
     
@@ -60,6 +88,8 @@ class ApplyPixelCorrections(kgs.BaseClass):
     linear_correction = True
     dark_current = True
     flat_field = True
+    remove_cosmic_rays = True
+    cosmic_ray_threshold = 20
     
     adc_offset_sign = -1 
     dark_current_sign = 1
@@ -118,6 +148,19 @@ class ApplyPixelCorrections(kgs.BaseClass):
             kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2])                
             return signal
         
+        def remove_cosmic_rays(signal):
+            #diff = np.abs(signal[1:,:,:] - signal[:-1,:,:])
+            #is_cosmic_ray = cp.empty_like(signal, dtype=bool)
+            #is_cosmic_ray[0,...] = diff[0,...]>self.cosmic_ray_threshold
+            #is_cosmic_ray[-1,...] = diff[-1,...]>self.cosmic_ray_threshold
+            #is_cosmic_ray[1:-1,...] = ( (diff[1:,...]>self.cosmic_ray_threshold) & (diff[:-1,...]>self.cosmic_ray_threshold))
+            is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold
+            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,0.0003])
+            signal[is_cosmic_ray] = cp.nan
+            inpaint_along_axis_inplace(signal)
+            return signal
+            
+        
         # Load calibration data
         dark = clip_2d(read_parquet_to_cupy(calibration_directory+'dark.parquet'))
         dead = clip_2d(read_parquet_to_cupy(calibration_directory+'dead.parquet'))
@@ -153,16 +196,21 @@ class ApplyPixelCorrections(kgs.BaseClass):
         # Flat field
         if self.flat_field:
             data.data = correct_flat_field(flat, data.data)
-        if kgs.profiling: cp.cuda.Device().synchronize()
-            
+        if kgs.profiling: cp.cuda.Device().synchronize()        
+                 
         # Correlated double sampling    
         data.data = data.data[1::2,:,:]-data.data[0::2,:,:]
         data.times = data.times[0::2]/2+data.times[1::2]/2   
         data.time_intervals = data.time_intervals[1::2]
         if kgs.profiling: cp.cuda.Device().synchronize()
         
+        # Remove cosmic rays
+        if self.remove_cosmic_rays:
+            data.data = remove_cosmic_rays(data.data)
+        if kgs.profiling: cp.cuda.Device().synchronize()
+        
         # One nan is all nan
-        data.data[:, cp.any(cp.isnan(data.data),0)] = cp.nan
+        assert cp.all (cp.any(cp.isnan(data.data),0) == cp.all(cp.isnan(data.data),0))
         if kgs.profiling: cp.cuda.Device().synchronize()
           
         
