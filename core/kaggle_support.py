@@ -25,6 +25,7 @@ import time
 import sklearn
 import shutil
 import torch
+import inspect
 from tqdm import tqdm
 
 
@@ -209,7 +210,7 @@ class ArielException(Exception):
 score_base = 0.264
 score_noise = 0.121
 noise_fac_used = 1.5
-error_code_conversion = 10
+error_code_conversion = 5
 def raise_error_code(exception):    
     if not env=='kaggle':
         raise exception
@@ -394,8 +395,19 @@ class SensorData(BaseClass):
     def _check_constraints(self):
         if self.loading_step==0:
             assert self.data is None
-        elif self.loading_step==1:
-            pass
+        elif self.loading_step<=4:
+            assert len(self.data.shape)==3
+        else:
+            assert len(self.data.shape)==2
+            
+        if self.loading_step>=1:
+            assert(self.times.shape == (self.data.shape[0],))
+            assert(self.time_intervals.shape == (self.data.shape[0],))
+        
+        if self.loading_step==5:
+            assert(self.wavelengths.shape == (self.data.shape[1],))            
+        elif self.loading_step>=1 and not self.is_FGS:
+            assert(self.wavelengths.shape == (self.data.shape[2],))    
         
 class TransitLoader(BaseClass):
     # Manages loading transit data. User must fill in the classes below.

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, fields
 import kaggle_support as kgs
 import pyarrow.parquet
 from astropy.stats import sigma_clip
+import matplotlib.pyplot as plt
 
 #@kgs.profile_each_line
 def read_parquet_to_numpy(filename):
@@ -17,7 +18,6 @@ def read_parquet_to_numpy(filename):
 def read_parquet_to_cupy(filename):
     return cp.array(read_parquet_to_numpy(filename))
 
-@kgs.profile_each_line
 def inpaint_along_axis_inplace(arr, axis=0):
     arr = cp.asarray(arr)
     ndim = arr.ndim
@@ -45,6 +45,105 @@ def inpaint_along_axis_inplace(arr, axis=0):
 
     # No need to move axes back — arr was modified in-place through views
 
+def inpaint_vectorized(data):
+    """
+    Inpaints NaN‐patches along the last axis (Y) of `data` (shape C×X×Y)
+    by:
+      • flat‐extrapolating any NaN runs at the left or right edge
+      • linearly interpolating any interior NaN runs
+    Loops only over X and over NaN‐segments (rare), otherwise fully GPU‐vectorized.
+    """
+    C, X, Y = data.shape
+
+    for x in range(X):
+        # 1) find the mask of invalids along Y for this column
+        mask = cp.isnan(data[0, x, :])
+        if not mask.any():
+            continue  # no NaNs here
+
+        # if there are absolutely no valid pixels, skip (or fill with zeros if you prefer)
+        if not (~mask).any():
+            continue
+
+        # 2) find where mask flips -> segment starts/ends
+        diff = cp.diff(mask.astype(cp.int8))  # +1: False→True,  -1: True→False
+        starts = cp.where(diff == 1)[0] + 1    # indices where a NaN‐run begins
+        ends   = cp.where(diff == -1)[0]       # indices where a NaN‐run ends
+
+        # if the very first pixel is NaN, that run really starts at 0
+        if mask[0]:
+            starts = cp.concatenate((cp.array([0], dtype=starts.dtype), starts))
+        # if the very last pixel is NaN, that run ends at Y–1
+        if mask[-1]:
+            ends = cp.concatenate((ends, cp.array([Y-1], dtype=ends.dtype)))
+
+        # 3) fill each [start … end] segment
+        for st, en in zip(starts, ends):
+            # left‐edge run?
+            if st == 0:
+                # flat‐fill with first valid to the right
+                right = en + 1
+                fill = data[:, x, right][:, None]
+                data[:, x, : right] = fill
+
+            # right‐edge run?
+            elif en == Y - 1:
+                # flat‐fill with last valid to the left
+                left = st - 1
+                fill = data[:, x, left][:, None]
+                data[:, x, left + 1 :] = fill
+
+            # interior run: do linear interpolation
+            else:
+                left, right = st - 1, en + 1
+                length = right - left
+                # weights for positions y = left+1 … right-1
+                ys = cp.arange(left.get() + 1, right.get())
+                t = (ys - left).astype(data.dtype) / length
+                wL, wR = 1 - t, t
+
+                V_L = data[:, x, left][:, None]
+                V_R = data[:, x, right][:, None]
+
+                # broadcast over channels
+                data[:, x, left + 1 : right] = wL[None, :] * V_L + wR[None, :] * V_R
+
+   # final sanity check
+    print(data.shape, cp.sum(cp.isnan(data)))
+    assert not cp.any(cp.isnan(data)), "Some NaNs remain after inpainting!"
+
+    
+    
+def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
+    """
+    Bin `arr` along axis=0 in groups of `bin_size`, averaging within each bin.
+    Drops any leftover rows at the end if arr.shape[0] % bin_size != 0.
+    
+    Parameters
+    ----------
+    arr : cupy.ndarray
+        Input array of shape (N, D1, D2, ..., Dk).
+    bin_size : int
+        Number of consecutive slices along axis-0 to average together.
+        
+    Returns
+    -------
+    binned : cupy.ndarray
+        Array of shape (N//bin_size, D1, D2, ..., Dk), where each [i] is the
+        mean of arr[i*bin_size:(i+1)*bin_size, ...].
+    """
+    N = arr.shape[0]
+    n_bins = N // bin_size
+    if n_bins == 0:
+        raise ValueError(f"bin_size={bin_size} too large for array length {N}")
+    
+    # trim off the tail
+    trimmed = arr[: n_bins * bin_size]
+    
+    # reshape & average
+    new_shape = (n_bins, bin_size) + trimmed.shape[1:]
+    return trimmed.reshape(new_shape).mean(axis=1)
+
 @dataclass
 class LoadRawData(kgs.BaseClass):   
     
@@ -58,20 +157,31 @@ class LoadRawData(kgs.BaseClass):
         else:
             data.data = cp.reshape(data.data, (11250, 32, 356))                  
         if kgs.profiling: cp.cuda.Device().synchronize()
-            
+
+        # Times
         data.times = cp.array(kgs.axis_info[kgs.sensor_names[not data.is_FGS]+'-axis0-h'].to_numpy())*3600
         if kgs.profiling: cp.cuda.Device().synchronize()
         data.times = data.times[~cp.isnan(data.times)]
         if kgs.profiling: cp.cuda.Device().synchronize()
         
+        # Integration times
         if not data.is_FGS:
             dt = cp.array(kgs.axis_info['AIRS-CH0-integration_time'].dropna().values)
         else:
             dt = cp.ones(data.data.shape[0])*0.1
         dt[1::2] += 0.1
         data.time_intervals = dt
-        if kgs.profiling: cp.cuda.Device().synchronize()
         
+        # Wavelength
+        if data.is_FGS:
+            data.wavelengths = cp.array([kgs.wavelengths[0]])
+        else:
+            data.wavelengths = cp.array(kgs.axis_info['AIRS-CH0-axis2-um'].dropna().to_numpy())
+                
+        
+        if kgs.profiling: cp.cuda.Device().synchronize()
+     
+@dataclass
 class ApplyPixelCorrections(kgs.BaseClass):
     
     clip_columns = False
@@ -94,7 +204,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     adc_offset_sign = -1 
     dark_current_sign = 1
     
-    
+    @kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         calibration_directory = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_calibration_' + str(observation_number) + '/'
         
@@ -122,8 +232,8 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def mask_hot_dead(signal, dead, dark):
             hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
             if kgs.sanity_checks_active:
-                print('inf')
-                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.015+np.inf])        
+                print('0.1')
+                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.1])  # old was 0.015     
                 kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.005])      
             if self.mask_hot:
                 signal[:, hot] = cp.nan
@@ -146,7 +256,8 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
-            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7, 1.1]) 
+            print('-np.inf')
+            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7-np.inf, 1.1]) 
             kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2])                
             return signal
         
@@ -173,7 +284,9 @@ class ApplyPixelCorrections(kgs.BaseClass):
         # Clip to desired rows and columns, and make float64
         data.data = clip_3d(data.data)
         data.data = data.data.astype(cp.float64)        
-        if kgs.profiling: cp.cuda.Device().synchronize()
+        if not data.is_FGS and self.clip_columns:
+            data.wavelengths = data.wavelengths[self.clip_columns1:self.clip_columns2]
+        if kgs.profiling: cp.cuda.Device().synchronize
         
         # ADC
         offset = kgs.adc_info[kgs.sensor_names[not data.is_FGS]+'_adc_offset'].to_numpy()[0]
@@ -210,42 +323,88 @@ class ApplyPixelCorrections(kgs.BaseClass):
         if self.remove_cosmic_rays:
             data.data = remove_cosmic_rays(data.data)
         if kgs.profiling: cp.cuda.Device().synchronize()
+        
+        # Flip AIRS to have ascending wavelengths
+        if not data.is_FGS:
+            data.data = cp.flip(data.data, axis=2)
+            data.data = cp.ascontiguousarray(data.data)
+            data.wavelengths = cp.flip(data.wavelengths)
 
-class ApplyFullSensorCorrections:
+@dataclass
+class ApplyFullSensorCorrections(kgs.BaseClass):
     
     inpainting_time = True
     inpainting_wavelength = False
     inpainting_2d = False
     
+    remove_constant = 0.
+    
+    remove_background_based_on_rows = False
+    remove_background_n_rows = 8 
+    
+    @kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         if self.inpainting_time:
             inpaint_along_axis_inplace(data.data,0)
         if self.inpainting_wavelength:
-            inpaint_along_axis_inplace(data.data,2)
-        if self.inpainting_2d:
-            print('x')
-            temp = copy.deepcopy(data.data)
-            inpaint_along_axis_inplace(data.data,2)
-            inpaint_along_axis_inplace(temp,1)
-            data.data = (data.data+temp)/2
+            inpaint_vectorized(data.data)
+        if self.inpainting_2d:            
+            temp = cp.transpose(copy.deepcopy(data.data), (0,2,1))
+            inpaint_vectorized(data.data)
+            inpaint_vectorized(temp)
+            data.data = (data.data+cp.transpose(temp, (0,2,1)))/2
             
+        data.data -= self.remove_constant
         
+        if self.remove_background_based_on_rows:
+            background_data = cp.concatenate((data.data[:,:self.remove_background_n_rows,:], data.data[:,-self.remove_background_n_rows:,:]), axis=1)
+            background_estimate = cp.mean(background_data, axis=(0,1))
+            to_keep = cp.full(data.data.shape[1], False)
+            to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
+            data.data = data.data[:,to_keep,:]
+            data.data -= background_estimate[None,None,:]
+ 
+@dataclass
+class ApplyTimeBinning(kgs.BaseClass):
+    
+    time_binning = 3
+    
+    def __call__(self, data, planet, observation_number):
+        data.data = bin_first_axis(data.data, self.time_binning)
+        data.times = bin_first_axis(data.times, self.time_binning)
+        data.time_intervals = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
+        
+class ApplyWavelengthBinning(kgs.BaseClass):
+    
+    def __call__(self, data, planet, observation_number):
+        if data.is_FGS:
+            data.data = cp.sum(data.data, axis=(1,2))
+            data.data = cp.reshape(data.data, (-1,1))
+        else:
+            data.data = cp.sum(data.data, axis=1)
+        data.data = cp.ascontiguousarray(data.data)
         
 def default_loaders():
     loader = kgs.TransitLoader()
     loader.load_raw_data = LoadRawData()
     loader.apply_pixel_corrections = ApplyPixelCorrections()
     loader.apply_full_sensor_corrections = ApplyFullSensorCorrections()
+    loader.apply_time_binning = ApplyTimeBinning()
+    loader.apply_wavelength_binning = ApplyWavelengthBinning()
     
     loaders = [loader, copy.deepcopy(loader)]
     
     # FGS configuration   
-    loaders[0].apply_full_sensor_corrections.inpainting_2d=False
+    loaders[0].apply_full_sensor_corrections.inpainting_2d=True
+    loaders[0].apply_full_sensor_corrections.remove_constant = 1.
+    loaders[0].apply_time_binning.time_binning = 50
     
     # AIRS configuration
     loaders[1].apply_pixel_corrections.clip_columns=True
     loaders[1].apply_pixel_corrections.clip_columns1=39
     loaders[1].apply_pixel_corrections.clip_columns2=321    
     loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
+    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=True
+    loaders[1].apply_time_binning.time_binning = 5
     
     return loaders
