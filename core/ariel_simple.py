@@ -17,8 +17,8 @@ class SimpleModel(kgs.Model):
     
     # Configuration - step 1
     poly_order_step1 = 3
-    t_steps = 50
-    rp_vals: np.ndarray = field(init=True, default_factory=lambda:np.linspace(0,0.5,50))
+    t_steps = 100
+    rp_vals: np.ndarray = field(init=True, default_factory=lambda:np.linspace(0,0.5,500))
     
     # internal
     _times = None # FGS, AIRS
@@ -95,13 +95,15 @@ class SimpleModel(kgs.Model):
             cheb_mat = cp.array(cheb_mat)
             t0_vals = np.round(np.linspace(0,len(self._times[ii]),self.t_steps)).astype(int)
             res_mat = cp.empty((len(t0_vals), len(self.rp_vals)))
+            rp_vals_cp = cp.array(self.rp_vals)
             for i_t, t0_ind in enumerate(t0_vals):
                 start_ind = t0_ind + len(self._times[ii])//2
                 this_curve = base_curve[start_ind:start_ind+len(self._times[ii])]
                 this_res_mat = []
-                for i_rp, rp in enumerate(self.rp_vals):                    
-                    design_mat = cheb_mat*(1-(rp/self.rp[ii])**2 *(1-this_curve[:,None]))
-                    res_mat[i_t, i_rp] = cp.linalg.lstsq(design_mat, target_cp)[1][0]                    
+                # for i_rp, rp in enumerate(self.rp_vals):                    
+                #     design_mat = cheb_mat#*(1-(rp/self.rp[ii])**2 *(1-this_curve[:,None]))
+                #     res_mat[i_t, i_rp] = cp.linalg.lstsq(design_mat, target_cp / (1-(rp/self.rp[ii])**2 *(1-this_curve[:])))[1][0]
+                res_mat[i_t, :] = cp.linalg.lstsq(cheb_mat, target_cp[:,None] / (1-(rp_vals_cp[None,:]/self.rp[ii])**2 *(1-this_curve[:,None])))[1]
             min_index = cp.unravel_index(cp.argmin(res_mat), res_mat.shape)           
             start_ind = t0_vals[min_index[0].get()] + len(self._times[ii])//2            
             this_curve = base_curve[start_ind:start_ind+len(self._times[ii])]            
