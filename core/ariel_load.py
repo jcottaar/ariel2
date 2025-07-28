@@ -109,7 +109,6 @@ def inpaint_vectorized(data):
                 data[:, x, left + 1 : right] = wL[None, :] * V_L + wR[None, :] * V_R
 
    # final sanity check
-    print(data.shape, cp.sum(cp.isnan(data)))
     assert not cp.any(cp.isnan(data)), "Some NaNs remain after inpainting!"
 
     
@@ -232,8 +231,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def mask_hot_dead(signal, dead, dark):
             hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
             if kgs.sanity_checks_active:
-                print('0.1')
-                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.1])  # old was 0.015     
+                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.015]) 
                 kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.005])      
             if self.mask_hot:
                 signal[:, hot] = cp.nan
@@ -249,15 +247,13 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def clean_dark(signal, dark, dt):    
             signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
-            print('enable')
-            #kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.0015, 0.004]) 
-            #kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 0.02])        
+            kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.05, 0.01]) 
+            kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.])        
             return signal
 
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
-            print('-np.inf')
-            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7-np.inf, 1.1]) 
+            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7, 1.1]) 
             kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2])                
             return signal
         
@@ -268,8 +264,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
             #is_cosmic_ray[-1,...] = diff[-1,...]>self.cosmic_ray_threshold
             #is_cosmic_ray[1:-1,...] = ( (diff[1:,...]>self.cosmic_ray_threshold) & (diff[:-1,...]>self.cosmic_ray_threshold))
             is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold
-            print('enable')
-            #kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,0.0003])
+            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,5e-6])
             signal[is_cosmic_ray] = cp.nan
             return signal
             

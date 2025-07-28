@@ -196,6 +196,10 @@ def to_gpu(array):
     else:
         return cp.array(array)
     
+def clear_gpu():
+    cache = cupy.fft.config.get_plan_cache()
+    cache.clear()
+    cupy.get_default_memory_pool().free_all_blocks()
 '''
 Sanity checks and error handling
 '''
@@ -339,6 +343,10 @@ class Planet(BaseClass):
         else:
             return data_dir + '/test/' + str(self.planet_id) + '/'
         
+    def load_to_step(self, target_step, loaders):
+        for t in self.transits:
+            t.load_to_step(target_step, self, loaders)
+        
 @dataclass
 class Transit(BaseClass):
     # Holds all relevant information for a single transit    
@@ -470,24 +478,13 @@ model_parallel = None
 def infer_internal_single_parallel(data):    
     try:        
         global model_parallel
-        global disable_caching
-        global cache_dir_read
         if model_parallel is None:
-            model_parallel,disable_caching,cache_dir_read = dill_load(temp_dir+'parallel.pickle')
+            model_parallel = dill_load(temp_dir+'parallel.pickle')
         t=time.time()
-        if data.seismogram.data is None:
-            data.seismogram.load_to_memory()
-        return_data = model_parallel._infer_single(data)
-        return_data.seismogram.unload()
-        with portalocker.Lock(timing_filename, mode='a+', timeout=None, newline='') as csvfile:
-            #csvfile.seek(0, os.SEEK_END)
-            writer = csv.writer(csvfile)
-            writer.writerow([data.cache_name(), data.family, time.time()-t])
-        if model_parallel.write_cache and not return_data.do_not_cache and not disable_caching: # will be done later too, but in case we error out later...
-            this_cache_dir = cache_dir_write+model_parallel.cache_name+'/'
-            os.makedirs(this_cache_dir,exist_ok=True)
-            dill_save(this_cache_dir+return_data.cache_name(), return_data.velocity_guess)
-        return return_data
+        orig_step = data.transits[0].loading_step
+        data = model_parallel._infer_single(data)
+        data.load_to_step(orig_step,self.loaders)        
+        return data
     except Exception as err:
         import traceback
         print(traceback.format_exc())     
@@ -499,41 +496,34 @@ class Model(BaseClass):
     # Loads one or more cryoET measuerements
     state: int = field(init=False, default=0) # 0: untrained, 1: trained    
     run_in_parallel: bool = field(init=False, default=False) 
-    seed: object = field(init=True, default=None)  
-    cache_name: str = field(init=True, default='')
-
-    write_cache: bool = field(init=True, default=False)
-    read_cache: bool = field(init=True, default=False)
-    only_use_cached: bool = field(init=True, default=False)
-    apply_offset: float = field(init=True, default=0.)
-    round_results: bool = field(init=True, default=False)
+    seed: object = field(init=True, default=0) 
+    
+    loaders: list = field(init=True, default=None)
+    
+    def __post_init__(self):
+        super().__post_init__()
+        import ariel_load
+        self.loaders = ariel_load.default_loaders()        
 
     def _check_constraints(self):
         assert(self.state>=0 and self.state<=1)
+        assert len(self.loaders)==2
+        for load in self.loaders:
+            load.check_constraints()
 
-    def train(self, train_data, validation_data):
-        if self.state>=1:
-            return
-        if cache_only_mode:
-            self.state=1
-            return
-        if self.seed is None:
-            self.seed = np.random.default_rng(seed=None).integers(0,1e6).item()
+    def train(self, train_data):
         train_data = copy.deepcopy(train_data)
-        validation_data = copy.deepcopy(validation_data)
-        for d in train_data:
-            d.unload()
-        for d in validation_data:
-            d.unload()
-        self._train(train_data, validation_data)
-        for d in train_data:
-            d.unload()
-        for d in validation_data:
-            d.unload()
+        for t in train_data:            
+            t.check_constraints()
+        if self.state>=1:
+            return        
+        if self.seed is None:
+            self.seed = np.random.default_rng(seed=None).integers(0,1e6).item()    
+        self._train(train_data)
         self.state = 1
         self.check_constraints()        
 
-    def _train(self,train_data, validation_data):
+    def _train(self,train_data):
         pass
         # No training needed if not overridden
 
@@ -542,109 +532,35 @@ class Model(BaseClass):
         assert self.state == 1
         test_data = copy.deepcopy(test_data)
 
-        if self.read_cache and not disable_caching:
-            this_cache_dir = cache_dir_read+self.cache_name+'/'
-            files = set([os.path.basename(x) for x in glob.glob(this_cache_dir+'/*')])
-            cached = []
-            test_data_cached = []
-            tt = copy.deepcopy(test_data)
-            test_data = []
-            for d in tqdm(tt, desc="Importing cache "+self.cache_name, disable=len(tt)<=1):
-                if d.cache_name() in files:
-                    cached.append(True)
-                    test_data_cached.append(d)
-                    test_data_cached[-1].velocity_guess = dill_load(this_cache_dir+d.cache_name())[0]
-                else:
-                    cached.append(False)
-                    test_data.append(d)
-       
         for t in test_data:
-            if not t.velocity is None:
-                t.velocity.unload()
-        if self.only_use_cached:
-            test_data_inferred = test_data
-        else:
-            if len(test_data)>0:
-                test_data_inferred = self._infer(test_data)
-            else:
-                test_data_inferred = []
-
-        if self.read_cache and not disable_caching:
-            b_it = iter(test_data_cached)
-            c_it = iter(test_data_inferred)        
-            test_data = [
-                next(b_it) if c else next(c_it)
-                for c in cached
-            ] 
-        else:
-            test_data = test_data_inferred
-
-        for t in test_data:
-            t.seismogram.unload()
+            t.unload_spectrum()
             t.check_constraints()
-
-        if self.write_cache and not disable_caching:
-            this_cache_dir = cache_dir_write+self.cache_name+'/'
-            os.makedirs(this_cache_dir,exist_ok=True)
-            for d in test_data_inferred:
-                if not d.do_not_cache:
-                    dill_save(this_cache_dir+d.cache_name(), (d.velocity_guess, git_commit_id))
-
-        for d in test_data:
-            d.velocity_guess.data += self.apply_offset
-            d.velocity_guess.min_vel += self.apply_offset
-            if self.round_results:
-                d.velocity_guess.data = np.round(d.velocity_guess.data)
-                d.velocity_guess.min_vel = np.round(d.velocity_guess.min_vel)
+        test_data_inferred = self._infer(test_data)
+        for t in test_data_inferred:
+            t.check_constraints()
                 
         return test_data
 
     def _infer(self, test_data):
         # Subclass must implement this OR _infer_single
-        if self.run_in_parallel:
-            with open(timing_filename, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["cache_name","family","time_taken"])
-            for t in test_data:
-                t.unload()
-            claim_gpu('cupy')
-            claim_gpu('pytorch')
-            claim_gpu('')
-            with multiprocess.Pool(recommend_n_workers()) as p:
-                dill_save(temp_dir+'parallel.pickle', (self,disable_caching,cache_dir_read))
-                #result = p.starmap(infer_internal_single_parallel, zip(test_data))            
+        if self.run_in_parallel:  
+            clear_gpu()
+            with multiprocess.Pool(recommend_n_workers()) as p:                   
                 result = list(tqdm(
                     p.imap(infer_internal_single_parallel, test_data),
                     total=len(test_data),
-                    desc="Processing in parallel "+self.cache_name, smoothing = 0.05
+                    desc="Processing in parallel", smoothing = 0.05
                     ))
         else:
             result = []
-            for xx in tqdm(test_data, desc="Inferring "+self.cache_name, disable = len(test_data)<=1, smoothing = 0.05):     
-                x = copy.deepcopy(xx)  
-                if x.seismogram.data is None:
-                    x.seismogram.load_to_memory()
-                x = self._infer_single(x)
-                x.seismogram.unload()       
-                if self.write_cache and not x.do_not_cache and not disable_caching: # will be done later too, but in case we error out later...
-                    this_cache_dir = cache_dir_write+self.cache_name+'/'
-                    os.makedirs(this_cache_dir,exist_ok=True)
-                    dill_save(this_cache_dir+x.cache_name(), x.velocity_guess)
-                result.append(x)
+            for d in tqdm(test_data, desc="Inferring", disable = len(test_data)<=1, smoothing = 0.05):     
+                data=copy.deepcopy(d)
+                orig_step = data.transits[0].loading_step
+                data = self._infer_single(data)
+                data.load_to_step(orig_step,self.loaders)     
+                result.append(data)                
         return result
 
-@dataclass
-class ChainedModel(Model):
-    models: list = field(init=True, default_factory=list)
-
-    def _train(self,train_data, validation_data):
-        for m in self.models:
-            m.train(train_data, validation_data)
-
-    def _infer(self, data):
-        for m in self.models:
-            data = m.infer(data)
-        return data
 
 def score_metric(data, show_diagnostics=True):
     res_all = []
@@ -669,57 +585,3 @@ def score_metric(data, show_diagnostics=True):
         print('Combined: ', score)
 
     return score,score_per_family,res_all
-
-# def write_submission_file(data, output_file = output_dir+'submission.csv'):
-#     res = dict()
-#     res['oid_ypos'] = []
-#     x_vals = np.arange(1,70,2)
-#     x_vals_names = [ 'x_'+str(x) for x in x_vals ]
-#     for xn in x_vals_names:
-#         res[xn] = []
-#     for ii,d in enumerate(data):
-#         if ii%100==0:print(ii)
-#         name = os.path.basename(d.seismogram.filename[:-4])+'_y_'
-#         data = np.round(d.velocity_guess.data).astype(int)
-#         for y in np.arange(70):
-#             res['oid_ypos'].append(name+str(y))
-#             for x,xn in zip(x_vals, x_vals_names):
-#                 res[xn].append(data[y,x])
-#     print('x')
-#     df = pd.DataFrame(res)
-#     print('xx')
-#     df.to_csv(output_file, index=False)
-            
-# def write_submission_file(data, output_file = output_dir+'submission.csv', obfuscate=0., do_round = False, do_range = True):
-#     # precompute x‐positions and header
-#     x_vals = np.arange(1, 70, 2)
-#     x_names = [f"x_{x}" for x in x_vals]
-#     header = ["oid_ypos"] + x_names
-
-#     r=np.random.default_rng(seed=0)
-
-#     with open(output_file, "w", newline="") as f:
-#         writer = csv.writer(f)
-#         writer.writerow(header)
-
-#         for ii, d in enumerate(data):
-
-#             # your string prefix
-#             base = os.path.basename(d.seismogram.filename)[:-4]
-#             name_prefix = f"{base}_y_"
-
-#             # grab and round your 70×70 numpy array
-#             arr = d.velocity_guess.data.astype(np.float32) + (r.uniform(size=d.velocity_guess.data.shape)>0.5)*obfuscate
-#             if do_round:
-#                 arr = np.round(arr).astype(np.int32)
-#             else:
-#                 arr = arr.astype(np.float32)
-#             if do_range:
-#                 arr = np.clip(arr,1500,4500)
-
-#             # slice out only the 35 columns you care about
-#             sub = arr[:, x_vals]  # shape = (70, 35)
-
-#             # stream each of the 70 rows
-#             for y in range(sub.shape[0]):
-#                 writer.writerow([f"{name_prefix}{y}"] + sub[y].tolist())
