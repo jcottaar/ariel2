@@ -231,7 +231,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def mask_hot_dead(signal, dead, dark):
             hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
             if kgs.sanity_checks_active:
-                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.015]) 
+                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.018])  # ~0.0166 probed in test set
                 kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.005])      
             if self.mask_hot:
                 signal[:, hot] = cp.nan

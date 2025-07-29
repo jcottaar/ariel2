@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import scipy as sp
+import scipy
 import cupy as cp
 import copy
 from dataclasses import dataclass, field, fields
@@ -12,13 +12,18 @@ import batman
 class SimpleModel(kgs.Model):
     
     # Configuration
-    supersample_factor = 50
+    supersample_factor = 1
     do_plots = False
+    fixed_sigma: list = field(init=True, default_factory=lambda:[0.001,0.001]) # FGS, AIRS
     
     # Configuration - step 1
-    poly_order_step1 = 3
+    poly_order_step1 = 1
     t_steps = 100
     rp_vals: np.ndarray = field(init=True, default_factory=lambda:np.linspace(0,0.5,500))
+    
+    # Configuration - step 2
+    do_step2 = True
+    order_list: list = field(init=True, default_factory=lambda:[0,1,2,3,4,5]) # FGS, AIRS
     
     # internal
     _times = None # FGS, AIRS
@@ -34,10 +39,42 @@ class SimpleModel(kgs.Model):
     inc = None
     ecc = None
     w = 90
-    u: list = field(init=True, default_factory=lambda:[[0.1,0.1],[0.1,0.1]]) # for FGS and AIRS
+    u: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
     limb_dark = 'quadratic'
     # Other
     poly_vals = None # FGS, AIRS # ascending orders for Chebyshev, for FGS and AIRS
+    
+    # Diagnostics
+    pred = None # FGS,AIRS
+    cost_list = None 
+    
+    def _to_x(self):
+        x = [self.t0, self.per, self.a, self.inc, self.ecc, self.w]
+        for ii in range(2):
+            x = x+[self.rp[ii]]+list(self.u[ii])+list(self.poly_vals[ii])
+        return x
+    
+    def _from_x(self, x):
+        self.t0 = x[0]
+        self.per = x[1]
+        self.a = x[2]
+        self.inc = x[3]
+        self.ecc = x[4]
+        self.w = x[5]
+
+        index = 6
+        for ii in range(2):
+            self.rp[ii] = x[index]
+            index += 1
+            for jj in range(len(self.u[ii])):
+                self.u[ii][jj] = x[index]
+                index += 1
+            for jj in range(len(self.poly_vals[ii])):
+                self.poly_vals[ii][jj] = x[index]
+                index += 1
+        if kgs.debugging_mode>=2:
+            assert np.all(self._to_x()==x)
+            
     
     def _light_curve(self, sensor_id):
         params = batman.TransitParams()
@@ -103,7 +140,7 @@ class SimpleModel(kgs.Model):
                 # for i_rp, rp in enumerate(self.rp_vals):                    
                 #     design_mat = cheb_mat#*(1-(rp/self.rp[ii])**2 *(1-this_curve[:,None]))
                 #     res_mat[i_t, i_rp] = cp.linalg.lstsq(design_mat, target_cp / (1-(rp/self.rp[ii])**2 *(1-this_curve[:])))[1][0]
-                res_mat[i_t, :] = cp.linalg.lstsq(cheb_mat, target_cp[:,None] / (1-(rp_vals_cp[None,:]/self.rp[ii])**2 *(1-this_curve[:,None])))[1]
+                res_mat[i_t, :] = cp.linalg.lstsq(cheb_mat, target_cp[:,None] / (1-(rp_vals_cp[None,:]/self.rp[ii])**2 *(1-this_curve[:,None])), rcond=None)[1]
             min_index = cp.unravel_index(cp.argmin(res_mat), res_mat.shape)           
             start_ind = t0_vals[min_index[0].get()] + len(self._times[ii])//2            
             this_curve = base_curve[start_ind:start_ind+len(self._times[ii])]            
@@ -113,21 +150,54 @@ class SimpleModel(kgs.Model):
             self.t0 = np.max(self._times[ii]) - self._times[ii][t0_vals[min_index[0].get()]]
             self.rp[ii] = self.rp_vals[min_index[1].get()]
             
+        step1=[]
+        for ii in range(2):
+            step1.append(self._light_curve(ii))
             
-                    
+        # Step 2
+        def cost(x, do_plot = False):
+            self._from_x(x)
+            cost = 0
+            self.pred = [None]*2
+            for ii in range(2):
+                self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
+                cost += np.sqrt(np.mean( (self.pred[ii]-targets[ii])**2 ))
+            return cost
+        self.cost_list=[]
+        for o in self.order_list:
+            self.poly_order = o#self.poly_order_step2
+            for ii in range(2):
+                new_vals = np.zeros(self.poly_order+1)
+                inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
+                new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
+                self.poly_vals[ii] = new_vals
+            x0 = self._to_x()  
+            #print(cost(x0))
+            res = scipy.optimize.minimize(cost,x0)
+            #print(cost(res.x))
+            self.cost_list.append(cost(res.x))
                     
         
         if self.do_plots:            
-            _,ax = plt.subplots(1,2,figsize=(10,5))
+            _,ax = plt.subplots(1,3,figsize=(15,5))
             for ii in range(2):
                 plt.sca(ax[ii])
                 plt.grid(True)
                 plt.xlabel('Time [h]')
                 plt.ylabel('Normalized intensity')
                 plt.plot(self._times[ii]/3600, targets[ii])
-                plt.plot(self._times[ii]/3600, self._light_curve(ii))
-                plt.legend(('Measured', 'After step 1'))
+                plt.plot(self._times[ii]/3600, step1[ii])
+                plt.plot(self._times[ii]/3600, self.pred[ii])
+                plt.legend(('Measured', 'After step 1', 'After step 2'))
+            plt.sca(ax[2])
+            plt.plot(self.order_list[1:], self.cost_list[1:])
+            plt.grid(True)
+            plt.xlabel('Poly order')
+            plt.ylabel('Cost')
             plt.pause(0.001)
+            
+        self._times = None
+        self._times_norm = None
                 
         return data
     

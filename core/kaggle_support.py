@@ -239,6 +239,7 @@ class SanityCheckValue:
         self.limit = limit
         self.name = name
         self.code = code
+        self.seen_all = []
 
 # Perform a sanity check; this function is used throughout the data loading and modeling functions.
 def sanity_check(f,to_check,name,code,limit):
@@ -257,10 +258,12 @@ def sanity_check(f,to_check,name,code,limit):
             if value < limit[0]:
                 raise ArielException(code,name + ' too low: ' + str(value) + '<' + str(limit[0]))
         # Keep track of extreme values seen (helps in determining thresholds)
+        sanity_checks[name].seen_all.append(value)
         if sanity_checks[name].seen[0] > value:
             sanity_checks[name].seen[0] = value
         if sanity_checks[name].seen[1] < value:
             sanity_checks[name].seen[1] = value
+        
 
 # Show the minimum and miximum values seen for all sanity checks
 def print_sanity_checks():
