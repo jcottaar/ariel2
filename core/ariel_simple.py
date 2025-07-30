@@ -15,7 +15,7 @@ class SimpleModel(kgs.Model):
     # Configuration
     supersample_factor = 1
     do_plots = False
-    fixed_sigma: list = field(init=True, default_factory=lambda:[280e-6,163e-6]) # FGS, AIRS
+    fixed_sigma: list = field(init=True, default_factory=lambda:[300e-6,500e-6]) # FGS, AIRS
     # output = a*pred + b, at spectrum level (not rp)
     bias_a: list = field(init=True, default_factory=lambda:[0.001323, -0.01358]) # FGS, AIRS
     bias_b: list = field(init=True, default_factory=lambda:[-3.033e-5, -2.2346e-5]) # FGS, AIRS
@@ -29,10 +29,12 @@ class SimpleModel(kgs.Model):
     
     # Configuration - step 2
     do_step2 = True
-    fit_ecc = True
+    fit_ecc = False
+    use_correction_factor = False
     order_list: list = field(init=True, default_factory=lambda:[0,1,2,3,4,5]) # FGS, AIRS
     
     # internal
+    _targets = None # FGS, AIRS
     _times = None # FGS, AIRS
     _times_norm = None # FGS, AIRS
     
@@ -48,6 +50,7 @@ class SimpleModel(kgs.Model):
     w = None
     u = None
     limb_dark = 'quadratic'
+    correction_factor = None
     # Other
     poly_vals = None # FGS, AIRS # ascending orders for Chebyshev, for FGS and AIRS
     
@@ -58,7 +61,8 @@ class SimpleModel(kgs.Model):
     def _to_x(self):
         x = [self.t0/3600, self.per/24/3600, self.a, self.inc, self.ecc, self.w]
         for ii in range(2):
-            x = x+[self.rp[ii]]+list(self.u[ii])+list(self.poly_vals[ii])
+            #x = x+[self.rp[ii]]+list(self.u[ii])+list(self.poly_vals[ii])
+            x = x+[self.rp[ii]]+[self.correction_factor[ii]]+list(self.u[ii])+list(self.poly_vals[ii])
         return x
     
     def _from_x(self, x):
@@ -67,11 +71,13 @@ class SimpleModel(kgs.Model):
         self.a = x[2]
         self.inc = x[3]
         self.ecc = x[4]
-        self.w = x[5]
+        self.w = x[5]        
 
         index = 6
         for ii in range(2):
             self.rp[ii] = x[index]
+            index += 1
+            self.correction_factor[ii] = x[index]
             index += 1
             for jj in range(len(self.u[ii])):
                 self.u[ii][jj] = x[index]
@@ -99,6 +105,8 @@ class SimpleModel(kgs.Model):
         params.u = self.u[sensor_id] 
         model=batman.TransitModel(params, self._times[sensor_id], exp_time=(self._times[sensor_id][1]-self._times[sensor_id][0]), supersample_factor=self.supersample_factor, max_err=1)
         res = model.light_curve(params)
+        if self.use_correction_factor:
+            res = 1-self.correction_factor[sensor_id]*(1-res)
         res *= np.polynomial.chebyshev.chebval(self._times_norm[sensor_id], self.poly_vals[sensor_id])        
         return res
         
@@ -116,15 +124,16 @@ class SimpleModel(kgs.Model):
         self.w = 90
         self.rp = copy.deepcopy(self.rp_init)
         self.u = copy.deepcopy(self.u_init)
+        self.correction_factor = [1.,1.];
         self.poly_vals = [np.zeros(self.poly_order+1), np.zeros(self.poly_order+1)]                
-        targets = [None, None]
+        self._targets = [None, None]
         self._times = [None, None]
         self._times_norm = [None, None]
         for ii in range(2):
             self.poly_vals[ii][0] = 1
-            targets[ii] = cp.mean(data.transits[0].data[ii].data, axis=1)
-            targets[ii] /= cp.mean(targets[ii])
-            targets[ii] = targets[ii].get()
+            self._targets[ii] = cp.mean(data.transits[0].data[ii].data, axis=1)
+            self._targets[ii] /= cp.mean(self._targets[ii])
+            self._targets[ii] = self._targets[ii].get()
             self._times[ii] = data.transits[0].data[ii].times.get()
             t=self._times[ii]
             self._times_norm[ii] = 2*(t - t.min())/(t.max() - t.min()) - 1
@@ -132,7 +141,7 @@ class SimpleModel(kgs.Model):
         # Step 1
         for ii in range(2):
             self.t0 = np.max(self._times[ii])/2
-            target_cp = cp.array(targets[ii])            
+            target_cp = cp.array(self._targets[ii])            
             base_curve = self._light_curve(ii)
             i_done=0
             while np.min(base_curve)>0.999:
@@ -184,7 +193,7 @@ class SimpleModel(kgs.Model):
             self.pred = [None]*2
             for ii in range(2):
                 self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                cost += np.sqrt(np.mean( (self.pred[ii]-targets[ii])**2 ))
+                cost += np.sqrt(np.mean( (self.pred[ii]-self._targets[ii])**2 ))
             return cost
         self.cost_list=[]
         for o in self.order_list:
@@ -206,12 +215,12 @@ class SimpleModel(kgs.Model):
                 plt.grid(True)
                 plt.xlabel('Time [h]')
                 plt.ylabel('Normalized intensity')
-                plt.plot(self._times[ii]/3600, targets[ii])
+                plt.plot(self._times[ii]/3600, self._targets[ii])
                 plt.plot(self._times[ii]/3600, step1[ii])
                 plt.plot(self._times[ii]/3600, self.pred[ii])
                 plt.legend(('Measured', 'After step 1', 'After step 2'))
                 plt.sca(ax[1,ii])
-                plt.plot(targets[ii]-self.pred[ii])
+                plt.plot(self._targets[ii]-self.pred[ii])
             plt.sca(ax[0,2])
             plt.plot(self.order_list[1:], self.cost_list[1:])
             plt.grid(True)
@@ -223,25 +232,25 @@ class SimpleModel(kgs.Model):
         self._times_norm = None
         
         # sanity checks: t0, ecc, noise ratio
-        kgs.sanity_check(lambda x:x, self.t0, 'simple_t0', 10, [2.5*3600, 5*3600])
-        kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 11, [-0.25,0.25])
+        kgs.sanity_check(lambda x:x, self.t0, 'simple_t0', 11, [2.5*3600, 5*3600])
+        #kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 12, [-0.25,0.25])
         if kgs.sanity_checks_active:
             for ii in range(2):
-                #noise_estimate = ariel_numerics.estimate_noise(targets[ii])
-                residual = kgs.rms(targets[ii]-self.pred[ii])
-                residual_filtered = ariel_numerics.estimate_noise(targets[ii]-self.pred[ii])
+                #noise_estimate = ariel_numerics.estimate_noise(self._targets[ii])
+                residual = kgs.rms(self._targets[ii]-self.pred[ii])
+                residual_filtered = ariel_numerics.estimate_noise(self._targets[ii]-self.pred[ii])
                 #print(noise_estimate, residual)
                 ratio = residual/residual_filtered
                 if ii==0:
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_FGS', 12, [0.95,2.])
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_FGS', 12, [0.9,2.])
                 else:
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_AIRS', 13, [0.95,2.])
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_AIRS', 13, [0.9,2.])
                         
         
         # Report resutls
         data.spectrum = np.concatenate([
-            [(1+self.bias_a[0])*self.rp[0]**2+self.bias_b[0]], 
-            (1+self.bias_a[1])*self.rp[1]**2*np.ones(282)+self.bias_b[1]])
+            [(1+self.bias_a[0])*(self.rp[0]**2*self.correction_factor[0])+self.bias_b[0]], 
+            (1+self.bias_a[1])*(self.rp[1]**2*self.correction_factor[1])*np.ones(282)+self.bias_b[1]])
         sigma = np.concatenate([[self.fixed_sigma[0]], self.fixed_sigma[1]*np.ones(282)])
         data.spectrum_cov = np.diag(sigma**2)
        

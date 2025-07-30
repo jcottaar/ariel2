@@ -48,10 +48,12 @@ match env:
         data_dir = '/mnt/d/ariel2/data/'
         temp_dir = '/mnt/d/ariel2/temp/'             
         code_dir = '/mnt/d/ariel2/code/core/' 
+        csv_dir = '/mnt/d/ariel2/'
     case 'kaggle':
         data_dir = '/kaggle/input/ariel-data-challenge-2025/'
         temp_dir = '/temp/'             
         code_dir = '/kaggle/input/my-ariel2-library/'         
+        csv_dir = '/kaggle/working/'
 os.makedirs(temp_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
@@ -577,12 +579,14 @@ def make_submission_dataframe(data, include_sigma=True):
     submission = pd.read_csv(data_dir + '/sample_submission.csv')
     submission = submission[0:0]    
     if not include_sigma:
-        submission = submission.iloc[:, :284]
+        submission = submission.iloc[:, :284]    
     for i,d in enumerate(data):
+        spec_clipped = copy.deepcopy(d.spectrum)
+        spec_clipped[spec_clipped<=0]= 1e-9
         if include_sigma:
-            submission.loc[i] = np.concatenate(([d.planet_id], d.spectrum, np.sqrt(np.diag(d.spectrum_cov))))
+            submission.loc[i] = np.concatenate(([d.planet_id], spec_clipped, np.sqrt(np.diag(d.spectrum_cov))))
         else:
-            submission.loc[i] = np.concatenate(([d.planet_id], d.spectrum))
+            submission.loc[i] = np.concatenate(([d.planet_id], spec_clipped))
     return submission
 
     
@@ -600,6 +604,12 @@ def score_metric(data,reference_data,print_results=True):
         print(f"RMS error: {1e6*rms_error:.4f} ppm")
     
     return score,rms_error
+
+def write_submission_csv(df):
+    df = copy.deepcopy(df)
+    df = df.set_index("planet_id")
+    df.to_csv(csv_dir + '/submission.csv')
+        
 
 class ParticipantVisibleError(Exception):
     pass

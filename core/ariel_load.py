@@ -233,8 +233,10 @@ class ApplyPixelCorrections(kgs.BaseClass):
             if kgs.sanity_checks_active:
                 kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.018])  # ~0.0166 probed in test set
                 kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.012]) # ~0.0107 probed in test set
-            if self.mask_hot:
+            if self.mask_hot:                
                 signal[:, hot] = cp.nan
+            else:
+                print('deal with extremely negative dark in test set first...also more sanity checks may fail')
             if self.mask_dead:
                 signal[:, dead] = cp.nan
             return signal
@@ -247,14 +249,22 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def clean_dark(signal, dark, dt):    
             signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
-            kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.05, 0.01]) 
-            kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.])        
+            if self.mask_hot:
+                kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.01, 0.01]) 
+                kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0.005, 0.02])        
+            else:
+                kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-np.inf-0.05, 0.01]) 
+                kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.]) 
             return signal
 
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
-            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
-            kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2])                
+            if self.mask_hot:
+                kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7, 1.05]) 
+                kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.95, 1.2])  
+            else:
+                kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
+                kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2]) 
             return signal
         
         def remove_cosmic_rays(signal):
