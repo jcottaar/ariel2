@@ -192,7 +192,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     clip_rows2 = None
     
     mask_dead = True
-    mask_hot = False
+    mask_hot = True
     hot_sigma_clip = 5
     linear_correction = True
     dark_current = True
@@ -200,7 +200,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     remove_cosmic_rays = True
     cosmic_ray_threshold = 20
     
-    adc_offset_sign = -1 
+    adc_offset_sign = 1 
     dark_current_sign = 1
     
     @kgs.profile_each_line
@@ -232,7 +232,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
             hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
             if kgs.sanity_checks_active:
                 kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.018])  # ~0.0166 probed in test set
-                kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.005])      
+                kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.012]) # ~0.0107 probed in test set
             if self.mask_hot:
                 signal[:, hot] = cp.nan
             if self.mask_dead:
@@ -253,7 +253,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
-            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7, 1.1]) 
+            kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
             kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2])                
             return signal
         
@@ -332,10 +332,13 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     inpainting_wavelength = False
     inpainting_2d = False
     
-    remove_constant = 0.
+    #remove_constant = 0.
     
     remove_background_based_on_rows = False
     remove_background_n_rows = 8 
+    
+    remove_background_based_on_pixels = False
+    remove_background_pixels = 100
     
     @kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
@@ -349,7 +352,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             inpaint_vectorized(temp)
             data.data = (data.data+cp.transpose(temp, (0,2,1)))/2
             
-        data.data -= self.remove_constant
+        #data.data -= self.remove_constant
         
         if self.remove_background_based_on_rows:
             background_data = cp.concatenate((data.data[:,:self.remove_background_n_rows,:], data.data[:,-self.remove_background_n_rows:,:]), axis=1)
@@ -358,6 +361,12 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
             data.data = data.data[:,to_keep,:]
             data.data -= background_estimate[None,None,:]
+            
+        if self.remove_background_based_on_pixels:
+            mean_per_pixel = cp.mean(data.data, axis=0).flatten()
+            #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
+            background_estimate = cp.mean(cp.sort(mean_per_pixel)[:self.remove_background_pixels])
+            data.data -= background_estimate
  
 @dataclass
 class ApplyTimeBinning(kgs.BaseClass):
@@ -391,7 +400,7 @@ def default_loaders():
     
     # FGS configuration   
     loaders[0].apply_full_sensor_corrections.inpainting_2d=True
-    loaders[0].apply_full_sensor_corrections.remove_constant = 1.
+    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True
     loaders[0].apply_time_binning.time_binning = 50
     
     # AIRS configuration

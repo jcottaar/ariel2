@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import scipy as sp
+import scipy
 import dill # like pickle but more powerful
 import itertools
 import os
@@ -197,9 +197,9 @@ def to_gpu(array):
         return cp.array(array)
     
 def clear_gpu():
-    cache = cupy.fft.config.get_plan_cache()
+    cache = cp.fft.config.get_plan_cache()
     cache.clear()
-    cupy.get_default_memory_pool().free_all_blocks()
+    cp.get_default_memory_pool().free_all_blocks()
 '''
 Sanity checks and error handling
 '''
@@ -328,6 +328,7 @@ class Planet(BaseClass):
         self.P = row['P']
         self.sma = row['sma']
         self.i = row['i']
+        assert self.e==0.
         
     def load_spectrum(self):
         assert self.is_train
@@ -486,11 +487,13 @@ def infer_internal_single_parallel(data):
         t=time.time()
         orig_step = data.transits[0].loading_step
         data = model_parallel._infer_single(data)
-        data.load_to_step(orig_step,self.loaders)        
+        data.load_to_step(orig_step,model_parallel.loaders)        
         return data
     except Exception as err:
         import traceback
         print(traceback.format_exc())     
+        print('Planet ID: ', data.planet_id)
+        dill_save(temp_dir+'error.pickle', (err, data.planet_id))
         raise
 
 
@@ -542,18 +545,24 @@ class Model(BaseClass):
         for t in test_data_inferred:
             t.check_constraints()
                 
-        return test_data
+        return test_data_inferred
 
     def _infer(self, test_data):
         # Subclass must implement this OR _infer_single
         if self.run_in_parallel:  
             clear_gpu()
-            with multiprocess.Pool(recommend_n_workers()) as p:                   
-                result = list(tqdm(
-                    p.imap(infer_internal_single_parallel, test_data),
-                    total=len(test_data),
-                    desc="Processing in parallel", smoothing = 0.05
-                    ))
+            dill_save(temp_dir + '/parallel.pickle', self)
+            try:
+                with multiprocess.Pool(recommend_n_workers()) as p:                   
+                    result = list(tqdm(
+                        p.imap(infer_internal_single_parallel, test_data),
+                        total=len(test_data),
+                        desc="Processing in parallel", smoothing = 0.05
+                        ))
+            except Exception as err:
+                print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
+                raise
+            
         else:
             result = []
             for d in tqdm(test_data, desc="Inferring", disable = len(test_data)<=1, smoothing = 0.05):     
@@ -563,28 +572,100 @@ class Model(BaseClass):
                 data.load_to_step(orig_step,self.loaders)     
                 result.append(data)                
         return result
+    
+def make_submission_dataframe(data, include_sigma=True):
+    submission = pd.read_csv(data_dir + '/sample_submission.csv')
+    submission = submission[0:0]    
+    if not include_sigma:
+        submission = submission.iloc[:, :284]
+    for i,d in enumerate(data):
+        if include_sigma:
+            submission.loc[i] = np.concatenate(([d.planet_id], d.spectrum, np.sqrt(np.diag(d.spectrum_cov))))
+        else:
+            submission.loc[i] = np.concatenate(([d.planet_id], d.spectrum))
+    return submission
 
+    
+def score_metric(data,reference_data,print_results=True):
+    solution = make_submission_dataframe(reference_data, include_sigma=False)
+    submission = make_submission_dataframe(data)
+    
+    solution_np = solution.iloc[:,1:284].to_numpy()
+    
+    rms_error = rms(solution_np-submission.iloc[:,1:284].to_numpy())
+    score = _score(solution, submission, 'planet_id', np.mean(solution_np), np.std(solution_np), fgs_weight=57.846)
+    
+    if print_results:        
+        print(f"Score:     {score:.4f}")
+        print(f"RMS error: {1e6*rms_error:.4f} ppm")
+    
+    return score,rms_error
 
-def score_metric(data, show_diagnostics=True):
-    res_all = []
-    res_per_family = dict()
-    for d in data:
-        d.velocity.load_to_memory()
-        this_error = np.mean(np.abs(cp.asnumpy(d.velocity.data) - np.round(d.velocity_guess.data)))
-        d.velocity.unload()
-        res_all.append(this_error)
-        if not d.family in res_per_family:
-            res_per_family[d.family] = []
-        res_per_family[d.family].append(this_error)
+class ParticipantVisibleError(Exception):
+    pass
 
-    score = np.mean(res_all)
-    score_per_family = dict()
-    score_per_family['family'] = res_per_family.keys()
-    score_per_family['score'] = [np.mean(x) for x in res_per_family.values()]
-    score_per_family = pd.DataFrame(score_per_family)
+def _score(
+    solution: pd.DataFrame,
+    submission: pd.DataFrame,
+    row_id_column_name: str,
+    naive_mean: float,
+    naive_sigma: float,
+    fsg_sigma_true: float = 1e-6,
+    airs_sigma_true: float = 1e-5,
+    fgs_weight: float = 1,
+) -> float:
+    """
+    This is a Gaussian Log Likelihood based metric. For a submission, which contains the predicted mean (x_hat) and variance (x_hat_std),
+    we calculate the Gaussian Log-likelihood (GLL) value to the provided ground truth (x). We treat each pair of x_hat,
+    x_hat_std as a 1D gaussian, meaning there will be 283 1D gaussian distributions, hence 283 values for each test spectrum,
+    the GLL value for one spectrum is the sum of all of them.
 
-    if show_diagnostics:
-        print(score_per_family)
-        print('Combined: ', score)
+    Inputs:
+        - solution: Ground Truth spectra (from test set)
+            - shape: (nsamples, n_wavelengths)
+        - submission: Predicted spectra and errors (from participants)
+            - shape: (nsamples, n_wavelengths*2)
+        naive_mean: (float) mean from the train set.
+        naive_sigma: (float) standard deviation from the train set.
+        fsg_sigma_true: (float) standard deviation from the FSG1 instrument for the test set.
+        airs_sigma_true: (float) standard deviation from the AIRS instrument for the test set.
+        fgs_weight: (float) relative weight of the fgs channel
+    """
 
-    return score,score_per_family,res_all
+    del solution[row_id_column_name]
+    del submission[row_id_column_name]
+
+    if submission.min().min() < 0:
+        raise ParticipantVisibleError('Negative values in the submission')
+    for col in submission.columns:
+        if not pd.api.types.is_numeric_dtype(submission[col]):
+            raise ParticipantVisibleError(f'Submission column {col} must be a number')
+
+    n_wavelengths = len(solution.columns)
+    if len(submission.columns) != n_wavelengths * 2:
+        raise ParticipantVisibleError('Wrong number of columns in the submission')
+
+    y_pred = submission.iloc[:, :n_wavelengths].values
+    # Set a non-zero minimum sigma pred to prevent division by zero errors.
+    sigma_pred = np.clip(submission.iloc[:, n_wavelengths:].values, a_min=10**-15, a_max=None)
+    sigma_true = np.append(
+        np.array(
+            [
+                fsg_sigma_true,
+            ]
+        ),
+        np.ones(n_wavelengths - 1) * airs_sigma_true,
+    )
+    y_true = solution.values
+
+    GLL_pred = scipy.stats.norm.logpdf(y_true, loc=y_pred, scale=sigma_pred)
+    GLL_true = scipy.stats.norm.logpdf(y_true, loc=y_true, scale=sigma_true * np.ones_like(y_true))
+    GLL_mean = scipy.stats.norm.logpdf(y_true, loc=naive_mean * np.ones_like(y_true), scale=naive_sigma * np.ones_like(y_true))
+
+    # normalise the score, right now it becomes a matrix instead of a scalar.
+    ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)
+
+    weights = np.append(np.array([fgs_weight]), np.ones(len(solution.columns) - 1))
+    weights = weights * np.ones_like(ind_scores)
+    submit_score = np.average(ind_scores, weights=weights)
+    return float(submit_score) # clipping between 0 and 1 removed

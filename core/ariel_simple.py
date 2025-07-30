@@ -5,6 +5,7 @@ import cupy as cp
 import copy
 from dataclasses import dataclass, field, fields
 import kaggle_support as kgs
+import ariel_numerics
 import matplotlib.pyplot as plt
 import batman
 
@@ -14,32 +15,38 @@ class SimpleModel(kgs.Model):
     # Configuration
     supersample_factor = 1
     do_plots = False
-    fixed_sigma: list = field(init=True, default_factory=lambda:[0.001,0.001]) # FGS, AIRS
+    fixed_sigma: list = field(init=True, default_factory=lambda:[280e-6,163e-6]) # FGS, AIRS
+    # output = a*pred + b, at spectrum level (not rp)
+    bias_a: list = field(init=True, default_factory=lambda:[0.001323, -0.01358]) # FGS, AIRS
+    bias_b: list = field(init=True, default_factory=lambda:[-3.033e-5, -2.2346e-5]) # FGS, AIRS
     
     # Configuration - step 1
     poly_order_step1 = 1
     t_steps = 100
     rp_vals: np.ndarray = field(init=True, default_factory=lambda:np.linspace(0,0.5,500))
+    rp_init: list = field(init=True, default_factory=lambda:[0.05,0.05]) # FGS, AIRS
+    u_init: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
     
     # Configuration - step 2
     do_step2 = True
+    fit_ecc = True
     order_list: list = field(init=True, default_factory=lambda:[0,1,2,3,4,5]) # FGS, AIRS
     
     # internal
     _times = None # FGS, AIRS
     _times_norm = None # FGS, AIRS
     
-    # Trained
+    # Set during inference
     # Transit parameters (batman)
     poly_order = None
     t0 = None # in seconds
     per = None # in seconds
-    rp: list = field(init=True, default_factory=lambda:[0.05,0.05]) # FGS, AIRS
+    rp = None # FGS, AIRS
     a = None
     inc = None
     ecc = None
-    w = 90
-    u: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
+    w = None
+    u = None
     limb_dark = 'quadratic'
     # Other
     poly_vals = None # FGS, AIRS # ascending orders for Chebyshev, for FGS and AIRS
@@ -49,14 +56,14 @@ class SimpleModel(kgs.Model):
     cost_list = None 
     
     def _to_x(self):
-        x = [self.t0, self.per, self.a, self.inc, self.ecc, self.w]
+        x = [self.t0/3600, self.per/24/3600, self.a, self.inc, self.ecc, self.w]
         for ii in range(2):
             x = x+[self.rp[ii]]+list(self.u[ii])+list(self.poly_vals[ii])
         return x
     
     def _from_x(self, x):
-        self.t0 = x[0]
-        self.per = x[1]
+        self.t0 = x[0]*3600
+        self.per = x[1]*24*3600
         self.a = x[2]
         self.inc = x[3]
         self.ecc = x[4]
@@ -73,7 +80,7 @@ class SimpleModel(kgs.Model):
                 self.poly_vals[ii][jj] = x[index]
                 index += 1
         if kgs.debugging_mode>=2:
-            assert np.all(self._to_x()==x)
+            assert np.all( np.abs(self._to_x()-x)<=1e-10 )
             
     
     def _light_curve(self, sensor_id):
@@ -83,7 +90,10 @@ class SimpleModel(kgs.Model):
         params.rp = self.rp[sensor_id]
         params.a = self.a
         params.inc = self.inc
-        params.ecc = self.ecc
+        if self.fit_ecc:
+            params.ecc = self.ecc
+        else:
+            params.ecc = 0
         params.w = self.w   
         params.limb_dark = self.limb_dark
         params.u = self.u[sensor_id] 
@@ -93,7 +103,6 @@ class SimpleModel(kgs.Model):
         return res
         
     def _infer_single(self, data):
-        print('sanity checks!')
         # Load data
         data.transits[0].load_to_step(5, data, self.loaders)
         
@@ -104,7 +113,10 @@ class SimpleModel(kgs.Model):
         self.a = data.sma
         self.inc = data.i
         self.ecc = data.e
-        self.poly_vals = [np.zeros(self.poly_order+1), np.zeros(self.poly_order+1)]        
+        self.w = 90
+        self.rp = copy.deepcopy(self.rp_init)
+        self.u = copy.deepcopy(self.u_init)
+        self.poly_vals = [np.zeros(self.poly_order+1), np.zeros(self.poly_order+1)]                
         targets = [None, None]
         self._times = [None, None]
         self._times_norm = [None, None]
@@ -122,6 +134,17 @@ class SimpleModel(kgs.Model):
             self.t0 = np.max(self._times[ii])/2
             target_cp = cp.array(targets[ii])            
             base_curve = self._light_curve(ii)
+            i_done=0
+            while np.min(base_curve)>0.999:
+                if self.inc>=90:
+                    self.inc-=0.01
+                else:
+                    self.inc+=0.01
+                base_curve = self._light_curve(ii)
+                i_done+=1
+                if i_done>=100:
+                    raise ArielException(0, 'Couldn''t find inc')
+            #kgs.list_attrs(data)
             base_curve = np.concatenate([base_curve*0+1, base_curve, base_curve*0+1])
             base_curve = cp.array(base_curve)    
             cheb_mat = np.empty( (len(self._times[ii]), self.poly_order+1), dtype=np.float64)
@@ -146,7 +169,7 @@ class SimpleModel(kgs.Model):
             this_curve = base_curve[start_ind:start_ind+len(self._times[ii])]            
             this_res_mat = []                 
             design_mat = cheb_mat*(1-(self.rp_vals[min_index[1].get()]/self.rp[ii])**2 *(1-this_curve[:,None]))
-            self.poly_vals[ii] = cp.linalg.lstsq(design_mat, target_cp)[0].get()            
+            self.poly_vals[ii] = cp.linalg.lstsq(design_mat, target_cp, rcond=None)[0].get()            
             self.t0 = np.max(self._times[ii]) - self._times[ii][t0_vals[min_index[0].get()]]
             self.rp[ii] = self.rp_vals[min_index[1].get()]
             
@@ -172,16 +195,14 @@ class SimpleModel(kgs.Model):
                 new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
                 self.poly_vals[ii] = new_vals
             x0 = self._to_x()  
-            #print(cost(x0))
             res = scipy.optimize.minimize(cost,x0)
-            #print(cost(res.x))
             self.cost_list.append(cost(res.x))
                     
         
         if self.do_plots:            
-            _,ax = plt.subplots(1,3,figsize=(15,5))
+            _,ax = plt.subplots(2,3,figsize=(15,10))
             for ii in range(2):
-                plt.sca(ax[ii])
+                plt.sca(ax[0,ii])
                 plt.grid(True)
                 plt.xlabel('Time [h]')
                 plt.ylabel('Normalized intensity')
@@ -189,7 +210,9 @@ class SimpleModel(kgs.Model):
                 plt.plot(self._times[ii]/3600, step1[ii])
                 plt.plot(self._times[ii]/3600, self.pred[ii])
                 plt.legend(('Measured', 'After step 1', 'After step 2'))
-            plt.sca(ax[2])
+                plt.sca(ax[1,ii])
+                plt.plot(targets[ii]-self.pred[ii])
+            plt.sca(ax[0,2])
             plt.plot(self.order_list[1:], self.cost_list[1:])
             plt.grid(True)
             plt.xlabel('Poly order')
@@ -198,6 +221,29 @@ class SimpleModel(kgs.Model):
             
         self._times = None
         self._times_norm = None
-                
+        
+        # sanity checks: t0, ecc, noise ratio
+        kgs.sanity_check(lambda x:x, self.t0, 'simple_t0', 10, [2.5*3600, 5*3600])
+        kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 11, [-0.25,0.25])
+        if kgs.sanity_checks_active:
+            for ii in range(2):
+                #noise_estimate = ariel_numerics.estimate_noise(targets[ii])
+                residual = kgs.rms(targets[ii]-self.pred[ii])
+                residual_filtered = ariel_numerics.estimate_noise(targets[ii]-self.pred[ii])
+                #print(noise_estimate, residual)
+                ratio = residual/residual_filtered
+                if ii==0:
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_FGS', 12, [0.95,2.])
+                else:
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_AIRS', 13, [0.95,2.])
+                        
+        
+        # Report resutls
+        data.spectrum = np.concatenate([
+            [(1+self.bias_a[0])*self.rp[0]**2+self.bias_b[0]], 
+            (1+self.bias_a[1])*self.rp[1]**2*np.ones(282)+self.bias_b[1]])
+        sigma = np.concatenate([[self.fixed_sigma[0]], self.fixed_sigma[1]*np.ones(282)])
+        data.spectrum_cov = np.diag(sigma**2)
+       
         return data
     
