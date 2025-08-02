@@ -240,17 +240,18 @@ class SimpleModel(kgs.Model):
             # sanity checks: t0, ecc, noise ratio
             kgs.sanity_check(lambda x:x, self.t0, 'simple_t0', 11, [2.5*3600, 5*3600])
             #kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 12, [-0.25,0.25])
-            if kgs.sanity_checks_active:
-                for ii in range(2):
-                    #noise_estimate = ariel_numerics.estimate_noise(self._targets[ii])
-                    residual = kgs.rms(self._targets[ii]-self.pred[ii])
-                    residual_filtered = ariel_numerics.estimate_noise(self._targets[ii]-self.pred[ii])
-                    #print(noise_estimate, residual)
-                    ratio = residual-residual_filtered
-                    if ii==0:
-                        kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-np.inf,2.])
-                    else:
-                        kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-np.inf,2.])
+            for ii in range(2):
+                #noise_estimate = ariel_numerics.estimate_noise(self._targets[ii])
+                residual = kgs.rms(self._targets[ii]-self.pred[ii])
+                residual_filtered = ariel_numerics.estimate_noise(self._targets[ii]-self.pred[ii])
+                #print(noise_estimate, residual)
+                ratio = residual-residual_filtered
+                if ii==0:
+                    data.diagnostics['simple_residual_diff_FGS'] = ratio
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-np.inf,2.])
+                else:
+                    data.diagnostics['simple_residual_diff_AIRS'] = ratio
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-np.inf,2.])
 
 
             # Report resutls

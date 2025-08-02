@@ -24,7 +24,7 @@ import h5py
 import time
 import sklearn
 import shutil
-import torch
+#import torch
 import inspect
 from tqdm import tqdm
 import hashlib
@@ -62,7 +62,7 @@ os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
 def recommend_n_workers():
-    return torch.cuda.device_count()
+    return 2 if env=='kaggle' else 7#torch.cuda.device_count()
 
 n_cuda_devices = recommend_n_workers()
 process_name = multiprocess.current_process().name
@@ -309,6 +309,8 @@ class Planet(BaseClass):
     
     transits: list = field(init=True, default_factory = list) # transit observations for this planet
     
+    diagnostics: dict = field(init=True, default_factory = dict)
+    
     def _check_constraints(self):
         if not self.spectrum is None:
             assert self.spectrum.shape == wavelengths.shape
@@ -382,7 +384,13 @@ class Transit(BaseClass):
     def load_to_step(self, target_step, planet, loaders):
         caching = target_step in loaders[0].cache_steps
         if caching:
-            print(hashlib.sha256(dill.dumps(loaders)).digest())
+            cache_file_name = loader_cache_dir + '/' + hashlib.sha256(dill.dumps(loaders)).hexdigest()[:10] + '_' + str(planet.planet_id) + '_' + str(self.observation_number) + '_' + str(planet.is_train) + '_' + str(target_step) +'.pickle';
+            #print(cache_file_name)
+            if os.path.isfile(cache_file_name):
+                self.data = dill_load(cache_file_name)
+                self.loading_step = target_step
+                self.check_constraints()
+                return
             #cache_file_name = loader_cache_dir + '/' + 
         self.check_constraints()
         if target_step == self.loading_step:
@@ -404,6 +412,9 @@ class Transit(BaseClass):
                 loader.progress_one_step(d, planet, self.observation_number)
             self.loading_step += 1
             self.check_constraints()
+        if caching:
+            assert not os.path.isfile(cache_file_name)
+            dill_save(cache_file_name, self.data)
         assert self.loading_step == target_step
         
 @dataclass
