@@ -12,14 +12,19 @@ import copy
 
 def run_all_tests(regenerate_reference=False):
     print('configure simple sanity checks')
-    run_model_test(regenerate_reference=regenerate_reference)
     run_loader_test(regenerate_reference=regenerate_reference)
+    run_model_test(regenerate_reference=regenerate_reference)
+    
+    
+    
     
     
 def run_loader_test(regenerate_reference=False):
     train_data = kgs.load_all_train_data()
     data = train_data[75]
     loaders = ariel_load.default_loaders()
+    for ii in range(2):
+        loaders[ii].cache_steps = []
     data.load_to_step(5, loaders)
     data = (data.transits[0].data[0].data.get(),(data.transits[1].data[0].data.get()))
     if regenerate_reference:

@@ -27,6 +27,7 @@ import shutil
 import torch
 import inspect
 from tqdm import tqdm
+import hashlib
 
 
 '''
@@ -49,12 +50,15 @@ match env:
         temp_dir = '/mnt/d/ariel2/temp/'             
         code_dir = '/mnt/d/ariel2/code/core/' 
         csv_dir = '/mnt/d/ariel2/'
+        loader_cache_dir = '/mnt/d/ariel2/loader_cache/'
     case 'kaggle':
         data_dir = '/kaggle/input/ariel-data-challenge-2025/'
-        temp_dir = '/temp/'             
+        temp_dir = '/temp/'           
+        loader_cache_dir = '/temp/loader_cache/'
         code_dir = '/kaggle/input/my-ariel2-library/'         
         csv_dir = '/kaggle/working/'
 os.makedirs(temp_dir, exist_ok=True)
+os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
 def recommend_n_workers():
@@ -376,15 +380,26 @@ class Transit(BaseClass):
             d.check_constraints()
     
     def load_to_step(self, target_step, planet, loaders):
+        caching = target_step in loaders[0].cache_steps
+        if caching:
+            print(hashlib.sha256(dill.dumps(loaders)).digest())
+            #cache_file_name = loader_cache_dir + '/' + 
         self.check_constraints()
+        if target_step == self.loading_step:
+            return
         if target_step<self.loading_step:
             self.loading_step = 0
             self.data = Transit().data
             self.check_constraints()
-        for loader in loaders:
-            assert isinstance(loader, TransitLoader)
-            loader.check_constraints()
-        for ii in range(target_step - self.loading_step):
+            self.load_to_step(target_step, planet, loaders)
+            return
+        if target_step>self.loading_step+1:
+            self.load_to_step(target_step-1, planet, loaders)
+            assert target_step==self.loading_step+1
+        if target_step==self.loading_step+1:
+            for loader in loaders:
+                assert isinstance(loader, TransitLoader)
+                loader.check_constraints()                
             for d,loader in zip(self.data, loaders):
                 loader.progress_one_step(d, planet, self.observation_number)
             self.loading_step += 1
@@ -423,8 +438,11 @@ class SensorData(BaseClass):
         elif self.loading_step>=1 and not self.is_FGS:
             assert(self.wavelengths.shape == (self.data.shape[2],))    
         
+@dataclass
 class TransitLoader(BaseClass):
     # Manages loading transit data. User must fill in the classes below.
+    
+    cache_steps: list = field(init=True, default_factory = lambda:[5])
     
     load_raw_data: BaseClass = field(init=True, default=None) # must be callable
     apply_pixel_corrections: BaseClass = field(init=True, default=None) # must be callable

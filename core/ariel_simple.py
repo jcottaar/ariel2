@@ -114,7 +114,7 @@ class SimpleModel(kgs.Model):
         
     def _infer_single(self, data):
         # Load data
-        try:            
+       # try:            
             data.transits[0].load_to_step(5, data, self.loaders)
 
             # Prepare stuff       
@@ -123,9 +123,9 @@ class SimpleModel(kgs.Model):
             self.t0 = 3.5*3600
             self.a = data.sma
             self.inc = data.i
-            #if abs(self.inc-90)>0.1:
-            #    # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
-            #    self.inc = 89.9
+            if abs(self.inc-90)<0.1:
+                # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
+                self.inc = 89.9
             self.ecc = data.e
             self.w = 90
             self.rp = copy.deepcopy(self.rp_init)
@@ -261,10 +261,10 @@ class SimpleModel(kgs.Model):
             data.spectrum_cov = np.diag(sigma**2)
             data.check_constraints()
             return data
-        except Exception as err:
-            import traceback
-            import sys
-            exc_type, exc_value, exc_tb = sys.exc_info()
-            tb = traceback.extract_tb(exc_tb)
-            filename, lineno, funcname, text = tb[-1]
-            raise kgs.ArielException((lineno-116)/10,text)
+        # except Exception as err:
+        #     import traceback
+        #     import sys
+        #     exc_type, exc_value, exc_tb = sys.exc_info()
+        #     tb = traceback.extract_tb(exc_tb)
+        #     filename, lineno, funcname, text = tb[-1]
+        #     raise kgs.ArielException((lineno-116)/10,text)
