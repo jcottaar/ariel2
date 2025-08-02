@@ -58,7 +58,7 @@ os.makedirs(temp_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
 def recommend_n_workers():
-    return 2#torch.cuda.device_count()
+    return torch.cuda.device_count()
 
 n_cuda_devices = recommend_n_workers()
 process_name = multiprocess.current_process().name
