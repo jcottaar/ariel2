@@ -11,6 +11,7 @@ import copy
 
 
 def run_all_tests(regenerate_reference=False):
+    print('configure simple sanity checks')
     run_model_test(regenerate_reference=regenerate_reference)
     run_loader_test(regenerate_reference=regenerate_reference)
     

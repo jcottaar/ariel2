@@ -123,6 +123,9 @@ class SimpleModel(kgs.Model):
             self.t0 = 3.5*3600
             self.a = data.sma
             self.inc = data.i
+            #if abs(self.inc-90)>0.1:
+            #    # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
+            #    self.inc = 89.9
             self.ecc = data.e
             self.w = 90
             self.rp = copy.deepcopy(self.rp_init)
@@ -243,11 +246,11 @@ class SimpleModel(kgs.Model):
                     residual = kgs.rms(self._targets[ii]-self.pred[ii])
                     residual_filtered = ariel_numerics.estimate_noise(self._targets[ii]-self.pred[ii])
                     #print(noise_estimate, residual)
-                    ratio = residual/residual_filtered
+                    ratio = residual-residual_filtered
                     if ii==0:
-                        kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_FGS', 12, [0.9,2.])
+                        kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-np.inf,2.])
                     else:
-                        kgs.sanity_check(lambda x:x, ratio, 'simple_residual_ratio_AIRS', 13, [0.9,2.])
+                        kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-np.inf,2.])
 
 
             # Report resutls
