@@ -58,11 +58,11 @@ os.makedirs(temp_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
 def recommend_n_workers():
-    return torch.cuda.device_count()
+    return 2#torch.cuda.device_count()
 
 n_cuda_devices = recommend_n_workers()
 process_name = multiprocess.current_process().name
-if not multiprocess.current_process().name == "MainProcess":
+if not multiprocess.current_process().name == "MainProcess" and env!='local':
     print(process_name, multiprocess.current_process()._identity[0])  
     os.environ["CUDA_VISIBLE_DEVICES"] = str(np.mod(multiprocess.current_process()._identity[0], n_cuda_devices))
     print('CUDA_VISIBLE_DEVICES=', os.environ["CUDA_VISIBLE_DEVICES"]);
@@ -508,6 +508,8 @@ class Model(BaseClass):
     
     loaders: list = field(init=True, default=None)
     
+    use_known_spectrum: bool = field(init=True, default=False)
+    
     def __post_init__(self):
         super().__post_init__()
         import ariel_load
@@ -541,7 +543,10 @@ class Model(BaseClass):
         test_data = copy.deepcopy(test_data)
 
         for t in test_data:
-            t.unload_spectrum()
+            if self.use_known_spectrum:
+                assert not t.spectrum is None
+            else:
+                t.unload_spectrum()
             t.check_constraints()
         test_data_inferred = self._infer(test_data)
         for t in test_data_inferred:
@@ -587,6 +592,7 @@ def make_submission_dataframe(data, include_sigma=True):
             submission.loc[i] = np.concatenate(([d.planet_id], spec_clipped, np.sqrt(np.diag(d.spectrum_cov))))
         else:
             submission.loc[i] = np.concatenate(([d.planet_id], spec_clipped))
+    submission = submission.astype({'planet_id':'int64'})
     return submission
 
     

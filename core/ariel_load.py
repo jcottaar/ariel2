@@ -199,6 +199,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     flat_field = True
     remove_cosmic_rays = True
     cosmic_ray_threshold = 20
+    remove_first_and_last_frame = False
     
     adc_offset_sign = 1 
     dark_current_sign = 1
@@ -260,7 +261,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
             if self.mask_hot:
-                kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.7, 1.05]) 
+                kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.05]) # ~0.574 in test set
                 kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.95, 1.2])  
             else:
                 kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
@@ -334,6 +335,11 @@ class ApplyPixelCorrections(kgs.BaseClass):
             data.data = cp.flip(data.data, axis=2)
             data.data = cp.ascontiguousarray(data.data)
             data.wavelengths = cp.flip(data.wavelengths)
+            
+        if self.remove_first_and_last_frame:
+            data.data = data.data[1:-1,...]
+            data.times = data.times[1:-1]
+            data.time_intervals = data.time_intervals[1:-1]
 
 @dataclass
 class ApplyFullSensorCorrections(kgs.BaseClass):
