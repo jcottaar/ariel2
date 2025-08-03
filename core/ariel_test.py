@@ -16,6 +16,7 @@ def run_all_tests(regenerate_reference=False):
     run_loader_test(use_cache=True, regenerate_reference=False)
     run_loader_test(use_cache=True, regenerate_reference=False) # twice in case first one wrote cache
     run_model_test(regenerate_reference=regenerate_reference)
+    print('All tests passed!')
     
     
     
@@ -31,7 +32,7 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
         for ii in range(2):
             loaders[ii].cache_steps = []
     data.load_to_step(5, loaders)
-    data = (data.transits[0].data[0].data.get(),(data.transits[1].data[0].data.get()))
+    data = (data.transits[0].data[0].data.get(),(data.transits[1].data[1].data.get()))
     if regenerate_reference:
         kgs.dill_save(kgs.code_dir + '/loader_test.pickle', data)
     diff=deepdiff.DeepDiff(data, kgs.dill_load(kgs.code_dir + '/loader_test.pickle'))

@@ -352,6 +352,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     
     remove_background_based_on_rows = False
     remove_background_n_rows = 8 
+    remove_background_remove_used_rows = True
     
     remove_background_based_on_pixels = False
     remove_background_pixels = 100
@@ -373,9 +374,10 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
         if self.remove_background_based_on_rows:
             background_data = cp.concatenate((data.data[:,:self.remove_background_n_rows,:], data.data[:,-self.remove_background_n_rows:,:]), axis=1)
             background_estimate = cp.mean(background_data, axis=(0,1))
-            to_keep = cp.full(data.data.shape[1], False)
-            to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
-            data.data = data.data[:,to_keep,:]
+            if self.remove_background_remove_used_rows:
+                to_keep = cp.full(data.data.shape[1], False)
+                to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
+                data.data = data.data[:,to_keep,:]
             data.data -= background_estimate[None,None,:]
             
         if self.remove_background_based_on_pixels:
