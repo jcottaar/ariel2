@@ -11,7 +11,6 @@ import copy
 
 
 def run_all_tests(regenerate_reference=False):
-    print('configure simple sanity checks')
     run_loader_test(use_cache=False, regenerate_reference=regenerate_reference)
     run_loader_test(use_cache=True, regenerate_reference=False)
     run_loader_test(use_cache=True, regenerate_reference=False) # twice in case first one wrote cache

@@ -18,8 +18,8 @@ class SimpleModel(kgs.Model):
     do_plots = False
     fixed_sigma: list = field(init=True, default_factory=lambda:[300e-6,500e-6]) # FGS, AIRS
     # output = a*pred + b, at spectrum level (not rp)
-    bias_a: list = field(init=True, default_factory=lambda:[0.001323, -0.01358]) # FGS, AIRS
-    bias_b: list = field(init=True, default_factory=lambda:[-3.033e-5, -2.2346e-5]) # FGS, AIRS
+    bias_a: list = field(init=True, default_factory=lambda:[0.000309, -0.0141]) # FGS, AIRS
+    bias_b: list = field(init=True, default_factory=lambda:[-1.93e-5, -1.88e-5]) # FGS, AIRS
     
     # Configuration - step 1
     poly_order_step1 = 1
@@ -33,7 +33,7 @@ class SimpleModel(kgs.Model):
     fit_ecc = False
     weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     use_correction_factor = False
-    order_list: list = field(init=True, default_factory=lambda:[0,1,2,3,4,5]) # FGS, AIRS
+    order_list: list = field(init=True, default_factory=lambda:[0,1,2,3,4,5]) 
     
     # internal
     _targets = None # FGS, AIRS
@@ -128,6 +128,9 @@ class SimpleModel(kgs.Model):
                 self.inc = 89.9
             self.ecc = data.e
             self.w = 90
+            if self.fit_ecc:
+                self.ecc =  0.01
+                self.w = 89.
             self.rp = copy.deepcopy(self.rp_init)
             self.u = copy.deepcopy(self.u_init)
             self.correction_factor = [1.,1.];
@@ -248,10 +251,10 @@ class SimpleModel(kgs.Model):
                 ratio = residual-residual_filtered
                 if ii==0:
                     data.diagnostics['simple_residual_diff_FGS'] = ratio
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-np.inf,2.])
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-1e-4, 1.2e-4])
                 else:
                     data.diagnostics['simple_residual_diff_AIRS'] = ratio
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-np.inf,2.])
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-1e-4, 3e-5])
 
 
             # Report resutls
