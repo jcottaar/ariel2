@@ -18,8 +18,10 @@ class SimpleModel(kgs.Model):
     do_plots = False
     fixed_sigma: list = field(init=True, default_factory=lambda:[300e-6,500e-6]) # FGS, AIRS
     # output = a*pred + b, at spectrum level (not rp)
-    bias_a: list = field(init=True, default_factory=lambda:[0.000309, -0.0141]) # FGS, AIRS
-    bias_b: list = field(init=True, default_factory=lambda:[-1.93e-5, -1.88e-5]) # FGS, AIRS
+    #bias_a: list = field(init=True, default_factory=lambda:[0.000309, -0.0141]) # FGS, AIRS
+    #bias_b: list = field(init=True, default_factory=lambda:[-1.93e-5, -1.88e-5]) # FGS, AIRS
+    bias_a: list = field(init=True, default_factory=lambda:[0.,0.]) # FGS, AIRS
+    bias_b: list = field(init=True, default_factory=lambda:[0.,0.]) # FGS, AIRS
     
     # Configuration - step 1
     poly_order_step1 = 1

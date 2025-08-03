@@ -513,8 +513,10 @@ model_parallel = None
 def infer_internal_single_parallel(data):    
     try:        
         global model_parallel
+        global sanity_checks_active
+        global sanity_checks_without_errors
         if model_parallel is None:
-            model_parallel = dill_load(temp_dir+'parallel.pickle')
+            model_parallel, sanity_checks_active, sanity_checks_without_errors = dill_load(temp_dir+'parallel.pickle')
         t=time.time()
         orig_step = data.transits[0].loading_step
         data = model_parallel._infer_single(data)
@@ -587,7 +589,7 @@ class Model(BaseClass):
         # Subclass must implement this OR _infer_single
         if self.run_in_parallel:  
             clear_gpu()
-            dill_save(temp_dir + '/parallel.pickle', self)
+            dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors))
             try:
                 with multiprocess.Pool(recommend_n_workers()) as p:                   
                     result = list(tqdm(
@@ -630,15 +632,19 @@ def score_metric(data,reference_data,print_results=True):
     submission = make_submission_dataframe(data)
     
     solution_np = solution.iloc[:,1:284].to_numpy()
+    submission_np = submission.iloc[:,1:284].to_numpy()
     
-    rms_error = rms(solution_np-submission.iloc[:,1:284].to_numpy())
+    #rms_error = rms(solution_np-submission.iloc[:,1:284].to_numpy())
+    rms_error_fgs = rms(solution_np[:,:1]-submission_np[:,:1])
+    rms_error_airs = rms(solution_np[:,1:]-submission_np[:,1:])
     score = _score(solution, submission, 'planet_id', np.mean(solution_np), np.std(solution_np), fgs_weight=57.846)
     
     if print_results:        
-        print(f"Score:     {score:.4f}")
-        print(f"RMS error: {1e6*rms_error:.4f} ppm")
+        print(f"Score:          {score:.4f}")
+        print(f"RMS error FGS:  {1e6*rms_error_fgs:.2f} ppm")
+        print(f"RMS error AIRS: {1e6*rms_error_airs:.2f} ppm")
     
-    return score,rms_error
+    return score,rms_error_fgs,rms_error_airs
 
 def write_submission_csv(df):
     df = copy.deepcopy(df)
