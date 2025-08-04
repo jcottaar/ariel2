@@ -130,9 +130,9 @@ class SimpleModel(kgs.Model):
                 self.inc = 89.9
             self.ecc = data.e
             self.w = 90
-            #if self.fit_ecc:
-            #    self.ecc =  0.01
-            #    self.w = 89.
+            if self.fit_ecc:
+                self.ecc =  0.01
+                self.w = 89.9
             self.rp = copy.deepcopy(self.rp_init)
             self.u = copy.deepcopy(self.u_init)
             self.correction_factor = [1.,1.];
