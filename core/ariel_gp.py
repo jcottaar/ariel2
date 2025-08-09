@@ -264,8 +264,8 @@ def fit_gp(data, plot_final=False, model_options=ModelOptions(), stop_before_sol
     def adapt_func(model):
         # This function, provided to the solver, applies the minimum magnitude of the transit depth variation hyperparameter. The solver will run it after initial tuning.
         if not model_options.use_training_labels:
-            model.m['signal'].m['transit'].m['transit'].depth_model.m['variation'].scaling_factor = \
-                np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['transit'].depth_mdoel.m['variation'].scaling_factor))
+            model.m['signal'].m['transit'].depth_model.m['variation'].scaling_factor = \
+                np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['transit'].depth_model.m['variation'].scaling_factor))
         return model        
     posterior_mean, posterior_samples = gp.solve_gp_nonlinear(prior_model, obs, rng=np.random.default_rng(seed=data.planet_id), \
         update_rate=model_options.update_rate, n_iter=model_options.n_iter, update_hyperparameters_from=0,\
@@ -331,6 +331,9 @@ class PredictionModel(kgs.Model):
     starter_model = None
     model_options = None # ModelOptions as defined earlier, configuring the model                                                  
     plot_final = False
+    
+    # Diagnostics
+    results = None
 
     def __init__(self):
         super().__init__()
@@ -348,22 +351,22 @@ class PredictionModel(kgs.Model):
         
         # Construct and fithe GP
         results = fit_gp(test_data, model_options=self.model_options, plot_final=self.plot_final)       
+        self.results = results
 
         # Find where in the output we can find the desired transit depth values
-        inds = kgs.ismembertol(kgs.wavelengths, results['obs'].df['wavelength'])
+        inds = kgs.ismembertol(kgs.wavelengths,results['model_mean'].m['signal'].m['transit'].wavelengths)
         inds = np.delete(inds, inds==-1)
         
         # Evaluate the transit depth part of the posterior only, using the **mean** of the posterior
-        pred_labels = results['model_mean'].m['signal'].m['transit'].depth_model.get_prediction(results['obs'])
+        pred_labels = results['model_mean'].m['signal'].m['transit'].depth_model.get_prediction(results['model_mean'].m['signal'].m['transit'].obs_wavelength)
 
         # Grab the correct part of it -> we have our prediction
         pred = -pred_labels[inds,0]
 
         # Same as above, but now using **samples** to estimate the covariance matrix and sigma predictions
-        sample_labels = results['model_samples'].m['signal'].m['transit'].depth_model.get_prediction(results['obs'])
+        sample_labels = results['model_samples'].m['signal'].m['transit'].depth_model.get_prediction(results['model_mean'].m['signal'].m['transit'].obs_wavelength)
         sample_labels = sample_labels[inds,:]-pred_labels[inds,0][:,np.newaxis]
         cov = (sample_labels@sample_labels.T)/sample_labels.shape[1]
-        sigma = np.std(sample_labels, axis=1)
 
         # Sanity checks
        # kgs.sanity_check(np.mean, pred, 'pred_mean', 10, [0, 0.03])
@@ -438,7 +441,7 @@ class Observable(gp.Observable):
         else:
             return np.reshape(self.labels[np.logical_not(self.df['is_AIRS']),instance], self.FGS_shape)
 
-class TransitModel(gp.Model):
+class TransitModel(gp.FixedShape): #XXX not FixedShape
     # Behaves exactly as its _model property, i.e. all calls get passed to it. Typically subclasses of this class will make it do something more interesting.
     depth_model = []
     
@@ -488,7 +491,7 @@ class TransitModel(gp.Model):
         for ii in range(len(self.wavelengths)):
             self.inds_per_wavelength.append(inds_all[inds==ii])
             self.times_per_wavelength.append(all_times[self.inds_per_wavelength[-1]])       
-            self.is_AIRS.append(is_AIRS[inds[0]])
+            self.is_AIRS.append(is_AIRS[self.inds_per_wavelength[-1][0]])
         n_obs = obs.number_of_observations
         
         self.obs_wavelength = Observable()
@@ -499,59 +502,63 @@ class TransitModel(gp.Model):
         self.number_of_parameters = self.depth_model.number_of_parameters + 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters)
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
+        
+        self.number_of_parameters= 0
 
     def set_parameters_internal(self, to_what):
         # Start filling from depth_model
-        self.depth_model.set_parameters(to_what[:self.depth_model.number_of_parameters, :])
+        #self.depth_model.set_parameters(to_what[:self.depth_model.number_of_parameters, :])
+            
+        self.depth_model.set_parameters(np.tile(self.depth_model.get_parameters(),(1,self.number_of_instances)))
         
         base_params = self.transit_params[0]
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
   
-        # Loop over each instance and rebuild transit_params
-        n_params = len(self.transit_params[0][0].to_x())
-        for i_instance in range(self.number_of_instances):
-            cur_pos = self.depth_model.number_of_parameters
-            # Get the length of a transit_x vector by using the first one as template
-            self.transit_params[i_instance][0] = copy.deepcopy(self.transit_params[0][0])
-            self.transit_params[i_instance][1] = copy.deepcopy(self.transit_params[0][0])            
-            transit_x0 = np.zeros(n_params)
-            transit_x1 = np.zeros(n_params)
+#         # Loop over each instance and rebuild transit_params
+#         n_params = len(self.transit_params[0][0].to_x())
+#         for i_instance in range(self.number_of_instances):
+#             cur_pos = self.depth_model.number_of_parameters
+#             # Get the length of a transit_x vector by using the first one as template
+#             self.transit_params[i_instance][0] = copy.deepcopy(self.transit_params[0][0])
+#             self.transit_params[i_instance][1] = copy.deepcopy(self.transit_params[0][0])            
+#             transit_x0 = np.zeros(n_params)
+#             transit_x1 = np.zeros(n_params)
 
-            for i_param in range(n_params):
-                if i_param in self.common_parameters:
-                    # Shared parameter, only one value
-                    transit_x0[i_param] = to_what[cur_pos, i_instance]
-                    transit_x1[i_param] = to_what[cur_pos, i_instance]
-                    cur_pos += 1
-                elif i_param != self.Rp_parameter:
-                    # Distinct parameters for 0 and 1
-                    transit_x0[i_param] = to_what[cur_pos, i_instance]
-                    cur_pos += 1
-                    transit_x1[i_param] = to_what[cur_pos, i_instance]
-                    cur_pos += 1
+#             for i_param in range(n_params):
+#                 if i_param in self.common_parameters:
+#                     # Shared parameter, only one value
+#                     transit_x0[i_param] = to_what[cur_pos, i_instance]
+#                     transit_x1[i_param] = to_what[cur_pos, i_instance]
+#                     cur_pos += 1
+#                 elif i_param != self.Rp_parameter:
+#                     # Distinct parameters for 0 and 1
+#                     transit_x0[i_param] = to_what[cur_pos, i_instance]
+#                     cur_pos += 1
+#                     transit_x1[i_param] = to_what[cur_pos, i_instance]
+#                     cur_pos += 1
 
-            # Update transit_params from x
-            self.transit_params[i_instance][0].from_x(transit_x0)
-            self.transit_params[i_instance][1].from_x(transit_x1)
+#             # Update transit_params from x
+#             self.transit_params[i_instance][0].from_x(transit_x0)
+#             self.transit_params[i_instance][1].from_x(transit_x1)
 
-            assert cur_pos == self.number_of_parameters
+#             assert cur_pos == self.number_of_parameters
         
-    def get_parameters_internal(self):
-        x = np.zeros((self.number_of_parameters, self.number_of_instances))        
-        x[:self.depth_model.number_of_parameters,:] = self.depth_model.get_parameters()        
-        for i_instance in range(self.number_of_instances):            
-            cur_pos = self.depth_model.number_of_parameters
-            transit_x0 = self.transit_params[i_instance][0].to_x()
-            transit_x1 = self.transit_params[i_instance][1].to_x()
-            for i_param in range(len(transit_x0)):
-                if i_param in self.common_parameters:
-                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-                    assert(transit_x1[i_param]==transit_x0[i_param])
-                elif not i_param == self.Rp_parameter:
-                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-                    x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
-            assert(cur_pos==self.number_of_parameters)
-        return x
+#     def get_parameters_internal(self):
+#         x = np.zeros((self.number_of_parameters, self.number_of_instances))        
+#         x[:self.depth_model.number_of_parameters,:] = self.depth_model.get_parameters()        
+#         for i_instance in range(self.number_of_instances):            
+#             cur_pos = self.depth_model.number_of_parameters
+#             transit_x0 = self.transit_params[i_instance][0].to_x()
+#             transit_x1 = self.transit_params[i_instance][1].to_x()
+#             for i_param in range(len(transit_x0)):
+#                 if i_param in self.common_parameters:
+#                     x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+#                     assert(transit_x1[i_param]==transit_x0[i_param])
+#                 elif not i_param == self.Rp_parameter:
+#                     x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+#                     x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
+#             assert(cur_pos==self.number_of_parameters)
+#         return x
 
     def set_hyperparameters_internal(self, to_what):
         self.depth_model.set_hyperparameters(to_what)
@@ -559,14 +566,24 @@ class TransitModel(gp.Model):
     def get_hyperparameters_internal(self):
         return self.depth_model.get_hyperparameters()
 
-    def get_observation_relationship_internal(self,obs):
-        return self.model.get_prior_matrices(obs) # we get both unnecessarily
+#     def get_observation_relationship_internal(self,obs):
+#         return self.model.get_prior_matrices(obs) # we get both unnecessarily
 
-    def get_prior_distribution_internal(self,obs):
-        return self.model.get_prior_matrices(obs) # we get both unnecessarily
+#     def get_prior_distribution_internal(self,obs):
+#         return self.model.get_prior_matrices(obs) # we get both unnecessarily
 
     def get_prediction_internal(self,obs):
-        return self.model.get_prediction(obs)
+        output = np.zeros((self.number_of_observations, self.number_of_instances))        
+        transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
+        
+        for i_instance in range(self.number_of_instances):
+            for i_wavelength in range(len(self.wavelengths)):
+                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength]]
+                this_transit_params.Rp = np.sqrt(-transit_depths[i_wavelength, i_instance])
+                light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
+                output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
+            
+        return output
 
     def is_linear(self):
         return False
@@ -575,7 +592,7 @@ class TransitModel(gp.Model):
         return self.depth_model.update_hyperparameters()
 
     def get_partial_prior_precision_matrices_internal(self,obs):
-        raise '???'
+        return [gp.sparse_matrix((0,0))]
 
     def clear_all_caches(self):
         self.depth_model.clear_all_caches()
@@ -694,9 +711,8 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     # Visualizes the model fit. See fit_gp for usage example.
     
     def model_to_mean_over_wavelengths(model, instance=0):
-        obs_temp = copy.deepcopy(obs)
-        obs_temp.labels = model.get_prediction(obs)
-        return apply_func_by_wavelength(np.mean, obs_temp, instance=instance)
+        obs_temp = copy.deepcopy(model.obs_wavelength)
+        return model.wavelengths, model.depth_model.get_prediction(obs_temp)[:,instance]
         
 
     def apply_func_by_wavelength(func, obs, instance=0):
@@ -776,12 +792,12 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     _,ax = plt.subplots(1,2,figsize=(12,6))
     plt.sca(ax[0])
     for i in range(5):
-        wl_unique, result = model_to_mean_over_wavelengths(posterior_samples.m['signal'].m['transit'].depth_model, instance=i)
+        wl_unique, result = model_to_mean_over_wavelengths(posterior_samples.m['signal'].m['transit'], instance=i)
         if i==0:
             plt.plot(wl_unique, -result, color = 'blue', linewidth=0.5)
         else:
             plt.plot(wl_unique, -result, color = 'blue', linewidth=0.5, label='_nolegend_')
-    wl_unique, result = model_to_mean_over_wavelengths(posterior_mean.m['signal'].m['transit'].depth_model)
+    wl_unique, result = model_to_mean_over_wavelengths(posterior_mean.m['signal'].m['transit'])
     plt.plot(wl_unique, -result, color='black')
     vals_pred = -result
     plt.grid(True)
