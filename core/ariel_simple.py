@@ -35,7 +35,7 @@ class SimpleModel(kgs.Model):
     fit_ecc = False
     weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     use_correction_factor = False
-    order_list: list = field(init=True, default_factory=lambda:[0,1,2,3,4,5]) 
+    order_list: list = field(init=True, default_factory=lambda:[0,1,2,3]) 
     
     # internal
     _targets = None # FGS, AIRS
@@ -238,10 +238,7 @@ class SimpleModel(kgs.Model):
                 plt.xlabel('Poly order')
                 plt.ylabel('Cost')
                 plt.pause(0.001)
-
-            self._times = None
-            self._times_norm = None
-
+            
             # sanity checks: t0, ecc, noise ratio
             kgs.sanity_check(lambda x:x, self.t0, 'simple_t0', 11, [2.5*3600, 5*3600])
             #kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 12, [-0.25,0.25])
@@ -265,7 +262,12 @@ class SimpleModel(kgs.Model):
                 (1+self.bias_a[1])*(self.rp[1]**2*self.correction_factor[1])*np.ones(282)+self.bias_b[1]])
             sigma = np.concatenate([[self.fixed_sigma[0]], self.fixed_sigma[1]*np.ones(282)])
             data.spectrum_cov = np.diag(sigma**2)
+            data.diagnostics['t0'] = self.t0
+            midpoint = np.min(self.pred[0])/2+np.max(self.pred[0])/2
+            data.diagnostics['t_ingress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[0,0]]
+            data.diagnostics['t_egress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[-1,0]]
             data.check_constraints()
+            
             return data
         # except Exception as err:
         #     import traceback
