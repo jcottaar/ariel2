@@ -35,6 +35,12 @@ from sksparse.cholmod import cholesky
 sparse_matrix = sp.sparse.csc_matrix
 sparse_matrix_str = 'csc'
 
+def check_matrix(A):
+    assert str(A.format) == sparse_matrix_str
+    assert str(A.dtype) == 'float64'
+    assert str(A.indptr.dtype) in ['int32','int64']
+    assert str(A.indices.dtype) in ['int32','int64']
+
 # Try to get sksparse to use GPU, but don't think it works
 import os
 os.environ["CHOLMOD_USE_GPU"] = "1"
@@ -56,12 +62,12 @@ class Observable(kgs.BaseClass):
     def select_observations(self, which):
         self.df = self.df[which]
         self.labels = self.labels[which,:]
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.df, pd.DataFrame)
         assert isinstance(self.labels, np.ndarray)
         assert len(self.df) == self.labels.shape[0]
         assert len(self.labels.shape) == 2
-        super().check_constraints_internal()
+        super()._check_constraints()
 
 class PriorMatrices(kgs.BaseClass):
     # Holds the properties of the model in matrix form
@@ -74,20 +80,22 @@ class PriorMatrices(kgs.BaseClass):
     prior_precision_matrix = sparse_matrix((0,0))
     design_matrix = sparse_matrix((0,0))
     noise_parameter_indices = np.zeros((0))
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.number_of_observations, int)
         assert isinstance(self.number_of_parameters, int)
         assert isinstance(self.prior_mean, np.ndarray)
         assert isinstance(self.observable_offset, np.ndarray)
-        assert isinstance(self.prior_precision_matrix, sparse_matrix)
-        assert isinstance(self.design_matrix, sparse_matrix)
+        #assert isinstance(self.prior_precision_matrix, sparse_matrix)
+        #assert isinstance(self.design_matrix, sparse_matrix)
+        check_matrix(self.prior_precision_matrix)
+        check_matrix(self.design_matrix)
         assert isinstance(self.noise_parameter_indices, np.ndarray)
         assert self.prior_mean.shape==(self.number_of_parameters,)
         assert self.observable_offset.shape==(self.number_of_observations,)
         assert self.prior_precision_matrix.shape==(self.number_of_parameters,self.number_of_parameters)
         assert self.design_matrix.shape==(self.number_of_observations,self.number_of_parameters)
         assert self.noise_parameter_indices.shape == (0,) or self.noise_parameter_indices.shape == (self.number_of_observations,)
-        super().check_constraints_internal()
+        super()._check_constraints()
 
 class Model(kgs.BaseClass):
     # The core class; this one is abstract, and subclasses will define actual behavior. Typical flow:
@@ -101,6 +109,8 @@ class Model(kgs.BaseClass):
     number_of_hyperparameters = 0
     expected_parameter_scale = 1. # only used for sanity checks
     expected_observation_scale = 1. # only used for sanity checks
+    c1 = 1e-5 # only used for sanity checks
+    c2 = 1e-8 # only used for sanity checks
 
     scaling_factor = 1. # Rows and columns of prior distribution matrix will be multiplied by this
     update_scaling = False # Should we use scaling_factor as a hyperparameter to tune?
@@ -111,14 +121,14 @@ class Model(kgs.BaseClass):
     cached_prior_distribution = None
     cached_observation_relationship = None
     
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.number_of_observations, int)
         assert isinstance(self.number_of_instances, int)
         assert isinstance(self.number_of_parameters, int)
         assert isinstance(self.number_of_hyperparameters, int)
         assert isinstance(self.expected_parameter_scale, float)
         assert isinstance(self.expected_observation_scale, float)
-        super().check_constraints_internal()
+        super()._check_constraints()
         
     def initialize(self, obs, number_of_instances=1):
         # Initialize our parameters based on an observable (typically just setting the appropriate amount of zeroes); labels in the observable are not used
@@ -193,8 +203,11 @@ class Model(kgs.BaseClass):
             pred2 = model_test.get_prediction_internal(obs)
             assert np.all(np.abs(pred1.T - (prior_matrices.observable_offset + (prior_matrices.design_matrix@self.get_parameters_internal()).T)) <=1e-10*np.abs(pred1.T)+1e-10*self.expected_observation_scale)
             diff_actual = pred2-pred1
-            diff_pred =  prior_matrices.design_matrix@offset            
-            assert np.all(np.abs(diff_actual - diff_pred)<=1e-5*np.abs(diff_actual+diff_pred)+1e-8*self.expected_observation_scale)
+            diff_pred =  prior_matrices.design_matrix@offset   
+            import ariel_gp
+            if isinstance(self, ariel_gp.TransitModel):
+                print(kgs.rms(diff_actual - diff_pred), kgs.rms(diff_actual+diff_pred))
+            assert np.all(np.abs(diff_actual - diff_pred)<=self.c1*np.abs(diff_actual+diff_pred)+self.c2*self.expected_observation_scale)
         
         return prior_matrices
 
@@ -269,12 +282,15 @@ class Model(kgs.BaseClass):
     def get_partial_prior_precision_matrices(self,obs):
         # Get the derivative of the precision matrix to our hyperparameters
         if self.update_scaling:
+            self.get_prior_matrices(obs).check_constraints()
             matrices = [self.get_prior_matrices(obs).prior_precision_matrix] 
         else:
             matrices = self.get_partial_prior_precision_matrices_internal(obs)
         assert len(matrices) == self.number_of_hyperparameters
         for m in matrices:
             assert m.shape == (self.number_of_parameters, self.number_of_parameters)
+            if kgs.debugging_mode>=1:
+                check_matrix(m)
         return matrices
 
     def get_partial_prior_precision_matrices_internal(self,obs):
@@ -328,11 +344,11 @@ class Passthrough(Model):
     def model(self,value):
         self._model = value
     
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.model, Model)
         assert (self.number_of_instances==self.model.number_of_instances)
         self.model.check_constraints()
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def initialize_internal(self,obs,number_of_instances):
         self.model.comment = self.comment
@@ -380,7 +396,7 @@ class ParameterScaler(Passthrough):
 
     scaler = 1.
 
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.scaler, float)
 
     def initialize_internal(self,obs,number_of_instances):
@@ -422,10 +438,10 @@ class Sparse2D(Passthrough):
     def __init__(self):
         grid_size = np.array([1,1])
 
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert self.h.shape == (2,)
         assert len(self.features)==2
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def alter_obs(self, obs):
         # Make the observable to pass to the internal mdoel
@@ -513,7 +529,7 @@ class Compound(Model):
         self._models = []
         super().__init__()
     
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.offset, float)
         assert isinstance(self.models, list)
         assert len(self.models)>0
@@ -529,7 +545,7 @@ class Compound(Model):
             assert isinstance(m, Model)
             if kgs.debugging_mode>=2:
                 m.check_constraints()
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def initialize_internal(self, obs, number_of_instances):
         param = 0
@@ -646,8 +662,8 @@ class Compound(Model):
             for i in range(len(this_matrices)):
                 old_indptr = this_matrices[i].indptr
                 this_matrices[i].resize((self.number_of_parameters, self.number_of_parameters))
-                this_matrices[i].indices = this_matrices[i].indices+cur_pos                
-                this_matrices[i].indptr = np.zeros(len(this_matrices[i].indptr))
+                this_matrices[i].indices = this_matrices[i].indices+int(cur_pos)
+                this_matrices[i].indptr = np.zeros(len(this_matrices[i].indptr), dtype=this_matrices[i].indptr.dtype)
                 this_matrices[i].indptr[cur_pos:next_pos+1] = old_indptr
                 matrices.append(this_matrices[i])
                 #raise('stop')
@@ -666,12 +682,12 @@ class Compound(Model):
 class CompoundNamed(Compound):
     # Allows accessing the models in Compound using a dict, making it easier to keep track of what is what in our models
     model_names = []
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.model_names, list)
         assert len(self.model_names) == len (self.models)        
         for s in self.model_names:
             assert isinstance(s, str)
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     @property
     def m(self):
@@ -695,10 +711,10 @@ class CompoundNamed(Compound):
 class ValueHolder(Model):
     # Abstract class that manages models that store their parameters explicitly.
     parameters = np.zeros((0,0)) # rows: parameteres, columns: samples
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.parameters, np.ndarray)
         assert self.parameters.shape == (self.number_of_parameters, self.number_of_instances)
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def initialize_internal(self, obs, number_of_instances):
         self.parameters = np.zeros((self.get_number_of_parameters_internal(obs), number_of_instances))
@@ -719,11 +735,11 @@ class FeatureSelector(ValueHolder):
     pred=None
     mat=None
     perm=None
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.features, list)
         for f in self.features:
             assert isinstance(f, str)
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def initialize_internal(self, obs, number_of_instances):        
         self.perm, self.mat = self.convert_features_to_nd_array_internal(obs)        
@@ -775,12 +791,12 @@ class FixedBasis(FeatureSelector):
     basis_functions = 0 # as matrix, # rows = number of observations, # cols = number of basis functions
     regularization_variance = 0 # variance values per basis function
 
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.basis_functions, np.ndarray)
         assert isinstance(self.regularization_variance, np.ndarray)
         assert len(self.basis_functions.shape)==2
         assert self.regularization_variance.shape == (self.basis_functions.shape[1],)
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def get_number_of_parameters_from_mat_internal(self, mat):
         return self.basis_functions.shape[1]
@@ -809,11 +825,11 @@ class Uncorrelated(FeatureSelector):
     sigma = 1.
     use_as_noise_matrix = False # Is this the noise term? Solver needs to know.
 
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.sigma, float)
         assert isinstance(self.use_as_noise_matrix, bool)
         assert self.sigma>0
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def get_number_of_parameters_from_mat_internal(self, mat):
         return mat.shape[0]
@@ -876,11 +892,11 @@ class SquaredExponentialKernelMulti(FeatureSelector):
     require_mean_of_non_noise_zero = False # doesn't do what you might expect for more than one feature
     
 
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert isinstance(self.sigmas, np.ndarray)
         assert isinstance(self.lengths, list)
         assert self.sigmas.shape == (len(self.lengths)+1,)
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def get_number_of_parameters_from_mat_internal(self, mat):
         return mat.shape[0]

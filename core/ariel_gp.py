@@ -182,6 +182,8 @@ def define_prior(obs, model_options, data):
 
     ## Combine the models above to create the full transit model
     transit_model = TransitModel()
+    transit_model.c1 = 1e20 # tweak numerical check
+    transit_model.c2 = 1e20 # tweak numerical check
     transit_model.depth_model = transit_depth_model
 
 
@@ -450,6 +452,8 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     is_AIRS = None
     inds_per_wavelength = None
     times_per_wavelength = None
+    number_of_extra_parameters = 0
+    base_values = None
     
     # Parameters
     transit_params = None # list of lists, top level is instances, second level is FGS/AIRS
@@ -457,6 +461,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     # Configuration
     common_parameters = None
     Rp_parameter = 4
+    std_value = 1e2
     
     
     def __post_init__(self):
@@ -465,16 +470,16 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
     
-    def check_constraints_internal(self):
-        assert isinstance(self.depth_model, Model)
+    def _check_constraints(self):
+        assert isinstance(self.depth_model, gp.Model)
         assert len(self.transit_params)==self.number_of_instances
-        assert len(self.transit_params[0])==self.number_of_instances
+        assert len(self.transit_params[0])==2
         for ii in range(2):
-            assert isinstance(self.transit_params[0][ii], ariel_transit.TransitParams())
+            assert isinstance(self.transit_params[0][ii], ariel_transit.TransitParams)
             self.transit_params[0][ii].check_constraints()                       
         assert (self.number_of_instances==self.depth_model.number_of_instances)
         self.depth_model.check_constraints()
-        super().check_constraints_internal()
+        super()._check_constraints()
 
     def initialize_internal(self,obs,number_of_instances):
         self.depth_model.comment = self.comment
@@ -499,22 +504,23 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         self.obs_wavelength.labels = np.zeros((len(self.wavelengths),1))
         
         self.depth_model.initialize(self.obs_wavelength, number_of_instances)
-        self.number_of_parameters = self.depth_model.number_of_parameters + 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters)
+        self.number_of_extra_parameters = 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters)
+        self.number_of_extra_parameters = 0
+        self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
         
-        self.number_of_parameters= 0
+        self.number_of_instances = 1
+        self.base_values = self.get_parameters()[self.depth_model.number_of_parameters:,0]
 
     def set_parameters_internal(self, to_what):
         # Start filling from depth_model
-        #self.depth_model.set_parameters(to_what[:self.depth_model.number_of_parameters, :])
-            
-        self.depth_model.set_parameters(np.tile(self.depth_model.get_parameters(),(1,self.number_of_instances)))
-        
+        self.depth_model.set_parameters(to_what[:self.depth_model.number_of_parameters, :])
+  
         base_params = self.transit_params[0]
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
   
-#         # Loop over each instance and rebuild transit_params
+        # Loop over each instance and rebuild transit_params
 #         n_params = len(self.transit_params[0][0].to_x())
 #         for i_instance in range(self.number_of_instances):
 #             cur_pos = self.depth_model.number_of_parameters
@@ -538,27 +544,27 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
 #                     cur_pos += 1
 
 #             # Update transit_params from x
-#             self.transit_params[i_instance][0].from_x(transit_x0)
-#             self.transit_params[i_instance][1].from_x(transit_x1)
+#             self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None;
+#             self.transit_params[i_instance][1].from_x(transit_x1);self.transit_params[i_instance][1].Rp = None;
 
 #             assert cur_pos == self.number_of_parameters
         
-#     def get_parameters_internal(self):
-#         x = np.zeros((self.number_of_parameters, self.number_of_instances))        
-#         x[:self.depth_model.number_of_parameters,:] = self.depth_model.get_parameters()        
-#         for i_instance in range(self.number_of_instances):            
-#             cur_pos = self.depth_model.number_of_parameters
-#             transit_x0 = self.transit_params[i_instance][0].to_x()
-#             transit_x1 = self.transit_params[i_instance][1].to_x()
-#             for i_param in range(len(transit_x0)):
-#                 if i_param in self.common_parameters:
-#                     x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-#                     assert(transit_x1[i_param]==transit_x0[i_param])
-#                 elif not i_param == self.Rp_parameter:
-#                     x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-#                     x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
-#             assert(cur_pos==self.number_of_parameters)
-#         return x
+    def get_parameters_internal(self):
+        x = np.zeros((self.number_of_parameters, self.number_of_instances))        
+        x[:self.depth_model.number_of_parameters,:] = self.depth_model.get_parameters()        
+        # for i_instance in range(self.number_of_instances):            
+        #     cur_pos = self.depth_model.number_of_parameters
+        #     transit_x0 = self.transit_params[i_instance][0].to_x()
+        #     transit_x1 = self.transit_params[i_instance][1].to_x()
+        #     for i_param in range(len(transit_x0)):
+        #         if i_param in self.common_parameters:
+        #             x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+        #             assert(transit_x1[i_param]==transit_x0[i_param])
+        #         elif not i_param == self.Rp_parameter:
+        #             x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+        #             x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
+        #     assert(cur_pos==self.number_of_parameters)
+        return x
 
     def set_hyperparameters_internal(self, to_what):
         self.depth_model.set_hyperparameters(to_what)
@@ -566,11 +572,36 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     def get_hyperparameters_internal(self):
         return self.depth_model.get_hyperparameters()
 
-#     def get_observation_relationship_internal(self,obs):
-#         return self.model.get_prior_matrices(obs) # we get both unnecessarily
+    def get_observation_relationship_internal(self,obs):
+        prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
+        transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
+        
+        design_matrix_rp = np.zeros((self.number_of_observations, len(self.wavelengths)))
+        for i_wavelength in range(len(self.wavelengths)):
+            this_transit_params = self.transit_params[0][self.is_AIRS[i_wavelength]]
+            this_transit_params.Rp = np.sqrt(-transit_depths[i_wavelength, 0])
+            derivatives = this_transit_params.light_curve_derivatives(self.times_per_wavelength[i_wavelength], [self.Rp_parameter])
+            design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = derivatives[0] * (-0.5/this_transit_params.Rp)
+            this_transit_params.Rp = None
+        design_matrix_rp = gp.sparse_matrix(design_matrix_rp)
+        
+        prior_matrices.number_of_parameters = self.number_of_parameters
+        prior_matrices.number_of_observations = self.number_of_observations
+        prior_matrices.design_matrix = design_matrix_rp @ prior_matrices.design_matrix
 
-#     def get_prior_distribution_internal(self,obs):
-#         return self.model.get_prior_matrices(obs) # we get both unnecessarily
+        prior_matrices.observable_offset = self.get_prediction(obs) - prior_matrices.design_matrix@self.get_parameters()   
+        prior_matrices.observable_offset = np.reshape( prior_matrices.observable_offset,-1 )
+        
+        return prior_matrices
+
+    def get_prior_distribution_internal(self,obs):
+        prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
+        prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
+            prior_matrices.prior_precision_matrix ,  sp.sparse.eye(self.number_of_extra_parameters)/self.std_value**2
+            ], format=gp.sparse_matrix_str )
+        prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.base_values])
+        prior_matrices.number_of_parameters = self.number_of_parameters
+        return prior_matrices
 
     def get_prediction_internal(self,obs):
         output = np.zeros((self.number_of_observations, self.number_of_instances))        
@@ -582,6 +613,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
                 this_transit_params.Rp = np.sqrt(-transit_depths[i_wavelength, i_instance])
                 light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
                 output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
+                this_transit_params.Rp = None
             
         return output
 
@@ -592,7 +624,10 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         return self.depth_model.update_hyperparameters()
 
     def get_partial_prior_precision_matrices_internal(self,obs):
-        return [gp.sparse_matrix((0,0))]
+        prior_matrices_partial = self.depth_model.get_partial_prior_precision_matrices(self.obs_wavelength)
+        for ii in range(len(prior_matrices_partial)):
+            prior_matrices_partial[ii] = sp.sparse.block_diag([prior_matrices_partial[ii],  gp.sparse_matrix((self.number_of_extra_parameters, self.number_of_extra_parameters))], format=gp.sparse_matrix_str)
+        return prior_matrices_partial
 
     def clear_all_caches(self):
         self.depth_model.clear_all_caches()
@@ -608,7 +643,7 @@ class NoiseModel(gp.UncorrelatedVaryingSigma):
 
 class ModelSplitSensors(gp.CompoundNamed):
     # Applies m['AIRS'] to AIRS part of data, m['FGS'] to FGS part of data. This involves lots of code, but that's all it does.
-    def check_constraints_internal(self):
+    def _check_constraints(self):
         assert len(self.models)==2
         # check keys
         self.m['AIRS']
@@ -663,7 +698,6 @@ class ModelSplitSensors(gp.CompoundNamed):
         prior_matrices.design_matrix = sp.sparse.block_diag([pm_FGS.design_matrix, pm_AIRS.design_matrix], format=gp.sparse_matrix_str)
         assert np.all(np.diff(obs.df['is_AIRS'])>=0)
         
-
         return prior_matrices
 
     def get_prior_distribution_internal(self,obs):

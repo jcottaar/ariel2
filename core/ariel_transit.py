@@ -17,8 +17,8 @@ class TransitParams(kgs.BaseClass):
     Ts:  float = field(init=True, default=None) # Stellar effective temperature in Kelvin.
     Mp:  float = field(init=True, default=None) # Planetary mass in Earth masses (M⊕).
     e:   float = field(init=True, default=None) # Orbital eccentricity (dimensionless).
-    w:   float = field(init=True, default=90)    # ???
-    Rp:  float = field(init=True, default=0)    # in units of Rs
+    w:   float = field(init=True, default=90.)    # ???
+    Rp:  float = field(init=True, default=0.)    # in units of Rs
     P:   float = field(init=True, default=None) # Orbital period in hours.
     t0:  float = field(init=True, default=None) # Transit midpoint in hours.
     sma: float = field(init=True, default=None) # Semi-major axis in stellar radii (Rs), showing the orbital distance relative to the stellar radii.
@@ -32,6 +32,7 @@ class TransitParams(kgs.BaseClass):
     # Modeling configuration
     supersample_factor = 1
     max_err = 1.
+    derivative_step_size = 1e-5
     
     def to_x(self):
         assert not self.expose_e_and_w # todo
@@ -64,4 +65,18 @@ class TransitParams(kgs.BaseClass):
         params.limb_dark = self.limb_dark
         params.u = self.u
         model=batman.TransitModel(params, times, exp_time=(times[1]-times[0]), supersample_factor=self.supersample_factor, max_err=self.max_err)
-        return model.light_curve(params)       
+        return model.light_curve(params)  
+    
+    def light_curve_derivatives(self,times,which):
+        base_curve = self.light_curve(times)
+        res = []
+        mod = copy.deepcopy(self)
+        for w in which:
+            x = mod.to_x()
+            x[w] += self.derivative_step_size
+            mod.from_x(x)
+            mod_curve = mod.light_curve(times)
+            res.append( (mod_curve-base_curve)/self.derivative_step_size )
+        return res
+            
+            
