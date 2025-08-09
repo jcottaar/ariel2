@@ -221,6 +221,7 @@ class SimpleModel(kgs.Model):
             midpoint = np.min(self.pred[0])/2+np.max(self.pred[0])/2
             data.diagnostics['t_ingress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[0,0]]
             data.diagnostics['t_egress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[-1,0]]
+            data.diagnostics['transit_params'] = self.transit_param
             data.check_constraints()
             
             return data
