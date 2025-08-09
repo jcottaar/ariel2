@@ -443,6 +443,14 @@ class Observable(gp.Observable):
         else:
             return np.reshape(self.labels[np.logical_not(self.df['is_AIRS']),instance], self.FGS_shape)
 
+def msqrtabs(x):
+    return -np.sign(x)*np.sqrt(np.abs(x))
+
+def d_msqrtabs(x):    
+    deriv = -1.0 / (2.0 * np.sqrt(np.abs(x)))
+    #deriv[np.isclose(x, 0.0)] = np.nan  # undefined at zero
+    return deriv
+        
 class TransitModel(gp.FixedShape): #XXX not FixedShape
     # Behaves exactly as its _model property, i.e. all calls get passed to it. Typically subclasses of this class will make it do something more interesting.
     depth_model = []
@@ -505,7 +513,6 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         
         self.depth_model.initialize(self.obs_wavelength, number_of_instances)
         self.number_of_extra_parameters = 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters)
-        self.number_of_extra_parameters = 0
         self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
@@ -521,49 +528,49 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
   
         # Loop over each instance and rebuild transit_params
-#         n_params = len(self.transit_params[0][0].to_x())
-#         for i_instance in range(self.number_of_instances):
-#             cur_pos = self.depth_model.number_of_parameters
-#             # Get the length of a transit_x vector by using the first one as template
-#             self.transit_params[i_instance][0] = copy.deepcopy(self.transit_params[0][0])
-#             self.transit_params[i_instance][1] = copy.deepcopy(self.transit_params[0][0])            
-#             transit_x0 = np.zeros(n_params)
-#             transit_x1 = np.zeros(n_params)
+        n_params = len(self.transit_params[0][0].to_x())
+        for i_instance in range(self.number_of_instances):
+            cur_pos = self.depth_model.number_of_parameters
+            # Get the length of a transit_x vector by using the first one as template
+            self.transit_params[i_instance][0] = copy.deepcopy(self.transit_params[0][0])
+            self.transit_params[i_instance][1] = copy.deepcopy(self.transit_params[0][0])            
+            transit_x0 = np.zeros(n_params)
+            transit_x1 = np.zeros(n_params)
 
-#             for i_param in range(n_params):
-#                 if i_param in self.common_parameters:
-#                     # Shared parameter, only one value
-#                     transit_x0[i_param] = to_what[cur_pos, i_instance]
-#                     transit_x1[i_param] = to_what[cur_pos, i_instance]
-#                     cur_pos += 1
-#                 elif i_param != self.Rp_parameter:
-#                     # Distinct parameters for 0 and 1
-#                     transit_x0[i_param] = to_what[cur_pos, i_instance]
-#                     cur_pos += 1
-#                     transit_x1[i_param] = to_what[cur_pos, i_instance]
-#                     cur_pos += 1
+            for i_param in range(n_params):
+                if i_param in self.common_parameters:
+                    # Shared parameter, only one value
+                    transit_x0[i_param] = to_what[cur_pos, i_instance]
+                    transit_x1[i_param] = to_what[cur_pos, i_instance]
+                    cur_pos += 1
+                elif i_param != self.Rp_parameter:
+                    # Distinct parameters for 0 and 1
+                    transit_x0[i_param] = to_what[cur_pos, i_instance]
+                    cur_pos += 1
+                    transit_x1[i_param] = to_what[cur_pos, i_instance]
+                    cur_pos += 1
 
-#             # Update transit_params from x
-#             self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None;
-#             self.transit_params[i_instance][1].from_x(transit_x1);self.transit_params[i_instance][1].Rp = None;
+            # Update transit_params from x
+            self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None;
+            self.transit_params[i_instance][1].from_x(transit_x1);self.transit_params[i_instance][1].Rp = None;
 
-#             assert cur_pos == self.number_of_parameters
+            assert cur_pos == self.number_of_parameters
         
     def get_parameters_internal(self):
         x = np.zeros((self.number_of_parameters, self.number_of_instances))        
         x[:self.depth_model.number_of_parameters,:] = self.depth_model.get_parameters()        
-        # for i_instance in range(self.number_of_instances):            
-        #     cur_pos = self.depth_model.number_of_parameters
-        #     transit_x0 = self.transit_params[i_instance][0].to_x()
-        #     transit_x1 = self.transit_params[i_instance][1].to_x()
-        #     for i_param in range(len(transit_x0)):
-        #         if i_param in self.common_parameters:
-        #             x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-        #             assert(transit_x1[i_param]==transit_x0[i_param])
-        #         elif not i_param == self.Rp_parameter:
-        #             x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-        #             x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
-        #     assert(cur_pos==self.number_of_parameters)
+        for i_instance in range(self.number_of_instances):            
+            cur_pos = self.depth_model.number_of_parameters
+            transit_x0 = self.transit_params[i_instance][0].to_x()
+            transit_x1 = self.transit_params[i_instance][1].to_x()
+            for i_param in range(len(transit_x0)):
+                if i_param in self.common_parameters:
+                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+                    assert(transit_x1[i_param]==transit_x0[i_param])
+                elif not i_param == self.Rp_parameter:
+                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+                    x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
+            assert(cur_pos==self.number_of_parameters)
         return x
 
     def set_hyperparameters_internal(self, to_what):
@@ -576,19 +583,33 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
         
+        # Design matrix for transit depth parameters
         design_matrix_rp = np.zeros((self.number_of_observations, len(self.wavelengths)))
         for i_wavelength in range(len(self.wavelengths)):
             this_transit_params = self.transit_params[0][self.is_AIRS[i_wavelength]]
-            this_transit_params.Rp = np.sqrt(-transit_depths[i_wavelength, 0])
+            this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, 0])
             derivatives = this_transit_params.light_curve_derivatives(self.times_per_wavelength[i_wavelength], [self.Rp_parameter])
-            design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = derivatives[0] * (-0.5/this_transit_params.Rp)
+            design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = derivatives[0] * d_msqrtabs(transit_depths[i_wavelength, 0])
             this_transit_params.Rp = None
-        design_matrix_rp = gp.sparse_matrix(design_matrix_rp)
+        design_matrix_rp = gp.sparse_matrix(design_matrix_rp) @ prior_matrices.design_matrix
+
+        
+        # Design matrix for other parameters
+        design_matrix_other = np.zeros((self.number_of_observations, self.number_of_extra_parameters))
+        base_labels = self.get_prediction(obs)[:,0]
+        base_params = self.get_parameters()
+        modified = copy.deepcopy(self)
+        for i_param in np.arange(self.depth_model.number_of_parameters, self.number_of_parameters):
+            mod_params = copy.deepcopy(base_params)
+            mod_params[i_param] += self.transit_params[0][0].derivative_step_size
+            modified.set_parameters(mod_params)
+            mod_labels = modified.get_prediction(obs)[:,0]
+            design_matrix_other[:,i_param-self.depth_model.number_of_parameters] = (mod_labels - base_labels) / self.transit_params[0][0].derivative_step_size
+        design_matrix_other = gp.sparse_matrix(design_matrix_other)
         
         prior_matrices.number_of_parameters = self.number_of_parameters
         prior_matrices.number_of_observations = self.number_of_observations
-        prior_matrices.design_matrix = design_matrix_rp @ prior_matrices.design_matrix
-
+        prior_matrices.design_matrix = gp.concatenate_sparse_csc_matrices([design_matrix_rp , design_matrix_other])
         prior_matrices.observable_offset = self.get_prediction(obs) - prior_matrices.design_matrix@self.get_parameters()   
         prior_matrices.observable_offset = np.reshape( prior_matrices.observable_offset,-1 )
         
@@ -610,7 +631,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         for i_instance in range(self.number_of_instances):
             for i_wavelength in range(len(self.wavelengths)):
                 this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength]]
-                this_transit_params.Rp = np.sqrt(-transit_depths[i_wavelength, i_instance])
+                this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
                 light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
                 output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
                 this_transit_params.Rp = None
