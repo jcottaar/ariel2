@@ -118,16 +118,6 @@ def gaussian_2D_filter_with_nans(U, sigma):
 def rms(x):
     return np.sqrt(np.mean(x**2))
 
-def ismembertol(a,b,reltol=1e-4):
-    # Returns array x of length len(a), subh that b[x]=a. Entries of a that are not in b get value -1. Not particularly efficient.
-    b_unique,inds_unique = np.unique(b, return_index = True)
-    def find_element(el):
-        is_close = np.abs(el-b_unique) < reltol*np.abs(el+b_unique)
-        if np.any(is_close):
-            return inds_unique[np.argwhere(is_close)[0,0]]
-        else:
-            return -1
-    return np.array([find_element(x) for x in a])
 
 '''
 Globals

@@ -68,4 +68,5 @@ class Fudger(kgs.Model):
 
 def baseline_model():
     model = Fudger(model=ariel_simple.SimpleModel())
+    model.model.run_in_parallel = True
     return model

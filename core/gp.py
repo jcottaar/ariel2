@@ -718,6 +718,7 @@ class FeatureSelector(ValueHolder):
     # cached stuff
     pred=None
     mat=None
+    perm=None
     def check_constraints_internal(self):
         assert isinstance(self.features, list)
         for f in self.features:
@@ -1138,6 +1139,7 @@ def sample_from_prior(model, obs, rng=None, n_samples=0):
 
     return model
 
+@kgs.profile_each_line
 def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True):   
     # Solves the GP assuming the model is linear.
     # Inputs:
@@ -1154,8 +1156,8 @@ def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True):
     
     if rng is None:
         rng = np.random.default_rng(seed=0)
-    model.check_constraints(kgs.debugging_mode_offset = 1)
-    obs.check_constraints(kgs.debugging_mode_offset = 1)
+    model.check_constraints(debugging_mode_offset = 1)
+    obs.check_constraints(debugging_mode_offset = 1)
     if n_samples>0:
         assert obs.number_of_instances==1
     else:
@@ -1223,6 +1225,7 @@ def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True):
             assert np.all(np.abs(labels-obs.labels)<=1e-8*np.abs(labels))
         return model, model_samples, cholQ
 
+#@kgs.profile_each_line
 def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_iter = 25, update_rate = 0.1, update_hyperparameters_from=10, hyperparameter_method = 'em', max_log_update_initial=1., fill_noise_parameters=False, adapt_func = lambda x:x):
     # Solves a GP model iteratively, each time linearizing around the mean of the posterior of the previous step. Also updates hyperparameters along the way.
     

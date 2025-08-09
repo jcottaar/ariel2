@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import scipy
+import scipy as sp
 import dill # like pickle but more powerful
 import itertools
 import os
@@ -43,6 +43,7 @@ print(env)
 profiling = False
 debugging_mode = 2
 verbosity = 1
+disable_any_parallel = False
 
 match env:
     case 'local':
@@ -62,7 +63,7 @@ os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
 def recommend_n_workers():
-    return 2 if env=='kaggle' else 7#torch.cuda.device_count()
+    return 2 if env=='kaggle' else 1#torch.cuda.device_count()
 
 n_cuda_devices = recommend_n_workers()
 process_name = multiprocess.current_process().name
@@ -103,6 +104,7 @@ def remove_and_make_dir(path):
 @dataclass
 class BaseClass:
     _is_frozen: bool = field(default=False, init=False, repr=False)
+    comment:str = field(init=True, default='')
 
     def check_constraints(self, debugging_mode_offset = 0):
         global debugging_mode
@@ -185,10 +187,36 @@ def upload_kaggle_dataset(source):
 def rms(array):
     return np.sqrt(np.mean(array**2))
 
+def ismembertol(a,b,reltol=1e-4):
+    # Returns array x of length len(a), subh that b[x]=a. Entries of a that are not in b get value -1. Not particularly efficient.
+    b_unique,inds_unique = np.unique(b, return_index = True)
+    def find_element(el):
+        is_close = np.abs(el-b_unique) < reltol*np.abs(el+b_unique)
+        if np.any(is_close):
+            return inds_unique[np.argwhere(is_close)[0,0]]
+        else:
+            return -1
+    return np.array([find_element(x) for x in a])
+
+
 def moving_average(a, n):
     ret = np.cumsum(a, dtype=float, axis=0)
     ret[n:, ...] -= ret[:-n, ...]
     return ret[n - 1:, ...] / n
+
+def gaussian_2D_filter_with_nans(U, sigma):
+    # Not used in model, but useful to have around   
+    # Source: https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+    truncate=2.0   # truncate filter at this many sigmas
+    V=U.copy()
+    V[np.isnan(U)]=0
+    VV=sp.ndimage.gaussian_filter(V,sigma=sigma,truncate=truncate)
+    W=0*U.copy()+1
+    W[np.isnan(U)]=0
+    WW=sp.ndimage.gaussian_filter(W,sigma=sigma,truncate=truncate)
+    Z=VV/WW
+    assert not np.any(np.isnan(Z))
+    return Z
 
 def to_cpu(array):
     if isinstance(array, cp.ndarray):
@@ -344,6 +372,7 @@ class Planet(BaseClass):
         assert self.spectrum.shape[0]==1    
         self.spectrum = self.spectrum[0,1:]
         self.spectrum_cov=None        
+        self.diagnostics['training_spectrum'] = copy.deepcopy(self.spectrum)
     
     def unload_spectrum(self):
         self.spectrum = None
@@ -430,6 +459,7 @@ class SensorData(BaseClass):
     times: cp.ndarray = field(init=True, default=None) # time associated with dimension 1 above, in seconds
     time_intervals: cp.ndarray = field(init=True, default=None) # time integration lengths, same size as above, in seconds
     wavelengths: cp.ndarray = field(init=True, default=None) # wavelengths associated with dimension 2 above, in um
+    noise_est: cp.ndarray = field(init=True, default=None) # 1 sigma noise estimate per pixel, normalized to integration time of 1 second
         
     
     def _check_constraints(self):
@@ -446,6 +476,7 @@ class SensorData(BaseClass):
         
         if self.loading_step==5:
             assert(self.wavelengths.shape == (self.data.shape[1],))            
+            assert(self.noise_est.shape == (self.data.shape[1],))        
         elif self.loading_step>=1 and not self.is_FGS:
             assert(self.wavelengths.shape == (self.data.shape[2],))    
         
@@ -486,6 +517,8 @@ def load_data(planet_id, is_train):
     data.load_orbital_and_stellar_properties()    
     if is_train:
         data.load_spectrum()
+    else:
+        data.diagnostics['training_spectrum'] = None
         
     files = glob.glob(data.get_directory()+'*')
     assert len(files)%4 == 0
@@ -515,8 +548,10 @@ def infer_internal_single_parallel(data):
         global model_parallel
         global sanity_checks_active
         global sanity_checks_without_errors
+        global debugging_mode
+        global profiling
         if model_parallel is None:
-            model_parallel, sanity_checks_active, sanity_checks_without_errors = dill_load(temp_dir+'parallel.pickle')
+            model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling = dill_load(temp_dir+'parallel.pickle')
         t=time.time()
         orig_step = data.transits[0].loading_step
         data = model_parallel._infer_single(data)
@@ -535,8 +570,7 @@ class Model(BaseClass):
     # Loads one or more cryoET measuerements
     state: int = field(init=False, default=0) # 0: untrained, 1: trained    
     run_in_parallel: bool = field(init=False, default=False) 
-    seed: object = field(init=True, default=0) 
-    
+
     loaders: list = field(init=True, default=None)
     
     use_known_spectrum: bool = field(init=True, default=False)
@@ -558,8 +592,8 @@ class Model(BaseClass):
             t.check_constraints()
         if self.state>=1:
             return        
-        if self.seed is None:
-            self.seed = np.random.default_rng(seed=None).integers(0,1e6).item()    
+        #if self.seed is None:
+        #    self.seed = np.random.default_rng(seed=None).integers(0,1e6).item()    
         self._train(train_data)
         self.state = 1
         self.check_constraints()        
@@ -587,9 +621,9 @@ class Model(BaseClass):
 
     def _infer(self, test_data):
         # Subclass must implement this OR _infer_single
-        if self.run_in_parallel:  
+        if self.run_in_parallel and not disable_any_parallel:  
             clear_gpu()
-            dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors))
+            dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling))
             try:
                 with multiprocess.Pool(recommend_n_workers()) as p:                   
                     result = list(tqdm(
@@ -607,7 +641,8 @@ class Model(BaseClass):
                 data=copy.deepcopy(d)
                 orig_step = data.transits[0].loading_step
                 data = self._infer_single(data)
-                data.load_to_step(orig_step,self.loaders)     
+                if len(test_data)>1:
+                    data.load_to_step(orig_step,self.loaders)     
                 result.append(data)                
         return result
     
@@ -709,9 +744,9 @@ def _score(
     )
     y_true = solution.values
 
-    GLL_pred = scipy.stats.norm.logpdf(y_true, loc=y_pred, scale=sigma_pred)
-    GLL_true = scipy.stats.norm.logpdf(y_true, loc=y_true, scale=sigma_true * np.ones_like(y_true))
-    GLL_mean = scipy.stats.norm.logpdf(y_true, loc=naive_mean * np.ones_like(y_true), scale=naive_sigma * np.ones_like(y_true))
+    GLL_pred = sp.stats.norm.logpdf(y_true, loc=y_pred, scale=sigma_pred)
+    GLL_true = sp.stats.norm.logpdf(y_true, loc=y_true, scale=sigma_true * np.ones_like(y_true))
+    GLL_mean = sp.stats.norm.logpdf(y_true, loc=naive_mean * np.ones_like(y_true), scale=naive_sigma * np.ones_like(y_true))
 
     # normalise the score, right now it becomes a matrix instead of a scalar.
     ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)

@@ -8,6 +8,7 @@ import kaggle_support as kgs
 import pyarrow.parquet
 from astropy.stats import sigma_clip
 import matplotlib.pyplot as plt
+import ariel_numerics
 
 #@kgs.profile_each_line
 def read_parquet_to_numpy(filename):
@@ -146,7 +147,7 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
 @dataclass
 class LoadRawData(kgs.BaseClass):   
     
-    @kgs.profile_each_line
+    #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         filename = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_signal_' + str(observation_number) + '.parquet'
         data.data = read_parquet_to_cupy(filename)
@@ -204,7 +205,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     adc_offset_sign = 1 
     dark_current_sign = 1
     
-    @kgs.profile_each_line
+    #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         calibration_directory = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_calibration_' + str(observation_number) + '/'
         
@@ -357,7 +358,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     remove_background_based_on_pixels = False
     remove_background_pixels = 100
     
-    @kgs.profile_each_line
+    #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         if self.inpainting_time:
             inpaint_along_axis_inplace(data.data,0)
@@ -396,8 +397,11 @@ class ApplyTimeBinning(kgs.BaseClass):
         data.times = bin_first_axis(data.times, self.time_binning)
         data.time_intervals = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
         
+        
+        
 class ApplyWavelengthBinning(kgs.BaseClass):
     
+    #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         if data.is_FGS:
             data.data = cp.sum(data.data, axis=(1,2))
@@ -405,6 +409,12 @@ class ApplyWavelengthBinning(kgs.BaseClass):
         else:
             data.data = cp.sum(data.data, axis=1)
         data.data = cp.ascontiguousarray(data.data)
+        
+        # Estimate noise per pixel
+        data.noise_est = cp.empty((data.data.shape[1]))
+        for ii in range(data.data.shape[1]):
+            data.noise_est[ii] = ariel_numerics.estimate_noise_cp(data.data[:,ii])*np.sqrt(data.time_intervals[0])
+            
         
 def default_loaders():
     loader = kgs.TransitLoader()

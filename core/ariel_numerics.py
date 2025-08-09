@@ -1,4 +1,5 @@
 import numpy as np
+import cupy as cp
 
 def estimate_noise(ts, window_size=10, degree=2, combine_method='rms'):
     """
@@ -61,3 +62,43 @@ def estimate_noise(ts, window_size=10, degree=2, combine_method='rms'):
         return float(np.median(rms_corr))
     else:
         raise ValueError("combine_method must be 'rms', 'mean' or 'median'")
+
+def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
+    """
+    CuPy version: same behavior, runs on GPU.
+    """
+    ts = cp.asarray(ts)
+    N = ts.size
+    if N < window_size:
+        raise ValueError(f"Time series length ({int(N)}) is shorter than window size ({window_size}).")
+
+    # sliding windows on GPU
+    windows = cp.lib.stride_tricks.sliding_window_view(ts, window_size)  # shape: (N - w + 1, w)
+
+    # Vandermonde and pseudoinverse on GPU
+    x = cp.arange(window_size)
+    V = cp.vander(x, degree + 1)                     # (w, p)
+    pinv = cp.linalg.pinv(V)                          # (p, w)
+
+    # fit and residual RMS per window (all on GPU)
+    coeffs = windows.dot(pinv.T)                      # (num_windows, p)
+    fitted = coeffs.dot(V.T)                          # (num_windows, w)
+    residuals = windows - fitted
+    rms = cp.sqrt(cp.mean(residuals**2, axis=1))      # (num_windows,)
+
+    # bias correction
+    p = degree + 1
+    correction = cp.sqrt(window_size / (window_size - p))
+    rms_corr = rms * correction
+
+    # combine and return as Python float
+    if combine_method == 'rms':
+        result = cp.sqrt(cp.mean(rms_corr**2))
+    elif combine_method == 'mean':
+        result = cp.mean(rms_corr)
+    elif combine_method == 'median':
+        result = cp.median(rms_corr)
+    else:
+        raise ValueError("combine_method must be 'rms', 'mean' or 'median'")
+
+    return result
