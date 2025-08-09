@@ -63,7 +63,7 @@ os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
 def recommend_n_workers():
-    return 2 if env=='kaggle' else 1#torch.cuda.device_count()
+    return 2 if env=='kaggle' else 7#torch.cuda.device_count()
 
 n_cuda_devices = recommend_n_workers()
 process_name = multiprocess.current_process().name
@@ -323,14 +323,7 @@ class Planet(BaseClass):
     # Holds loaded or estimated planet properties (atmospheric, stellar, and orbital), as well as the transit measurements
     planet_id: int = field(init=True, default=None) # Unique identifier for the star-planet system.
     is_train: bool = field(init=True, default=None) # Whether this is a train or test planet.
-    Rs:  float = field(init=True, default=None) # Stellar radius in solar radii (R☉).
-    Ms:  float = field(init=True, default=None) # Stellar mass in solar masses (M☉).
-    Ts:  float = field(init=True, default=None) # Stellar effective temperature in Kelvin.
-    Mp:  float = field(init=True, default=None) # Planetary mass in Earth masses (M⊕).
-    e:   float = field(init=True, default=None) # Orbital eccentricity (dimensionless).
-    P:   float = field(init=True, default=None) # Orbital period in days.
-    sma: float = field(init=True, default=None) # Semi-major axis in stellar radii (Rs), showing the orbital distance relative to the stellar radii.
-    i:   float = field(init=True, default=None) # Orbital inclination in degrees.
+    transit_params: object = field(init=True, default=None)
     
     spectrum: np.ndarray = field(init=True, default=None) # (Rp/Rs)^2, can be None or 1D array with lenght of wavelengths
     spectrum_cov: np.ndarray = field(init=True, default=None) # covariance matrix for uncertainty in spectrum, can be None or 2D array
@@ -338,6 +331,12 @@ class Planet(BaseClass):
     transits: list = field(init=True, default_factory = list) # transit observations for this planet
     
     diagnostics: dict = field(init=True, default_factory = dict)
+    
+    def __post_init__(self):
+        super().__post_init__()
+        import ariel_transit
+        self.transit_params = ariel_transit.TransitParams()        
+
     
     def _check_constraints(self):
         if not self.spectrum is None:
@@ -356,15 +355,15 @@ class Planet(BaseClass):
             row = test_star_info[test_star_info['planet_id']==self.planet_id]
         assert row.shape[0]==1
         row = row.iloc[0]        
-        self.Rs = row['Rs']
-        self.Ms = row['Ms']
-        self.Ts = row['Ts']
-        self.Mp = row['Mp']
-        self.e = row['e']
-        self.P = row['P']
-        self.sma = row['sma']
-        self.i = row['i']
-        assert self.e==0.
+        self.transit_params.Rs = row['Rs']
+        self.transit_params.Ms = row['Ms']
+        self.transit_params.Ts = row['Ts']
+        self.transit_params.Mp = row['Mp']
+        self.transit_params.e = row['e']
+        self.transit_params.P = row['P']*24
+        self.transit_params.sma = row['sma']
+        self.transit_params.i = row['i']
+        assert self.transit_params.e==0.
         
     def load_spectrum(self):
         assert self.is_train
