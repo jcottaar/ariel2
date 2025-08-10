@@ -204,9 +204,9 @@ class Model(kgs.BaseClass):
             assert np.all(np.abs(pred1.T - (prior_matrices.observable_offset + (prior_matrices.design_matrix@self.get_parameters_internal()).T)) <=1e-10*np.abs(pred1.T)+1e-10*self.expected_observation_scale)
             diff_actual = pred2-pred1
             diff_pred =  prior_matrices.design_matrix@offset   
-            import ariel_gp
-            if isinstance(self, ariel_gp.TransitModel):
-                print(kgs.rms(diff_actual - diff_pred), kgs.rms(diff_actual+diff_pred))
+            #import ariel_gp
+            #if isinstance(self, ariel_gp.TransitModel):
+            #    print(kgs.rms(diff_actual - diff_pred), kgs.rms(diff_actual+diff_pred))
             assert np.all(np.abs(diff_actual - diff_pred)<=self.c1*np.abs(diff_actual+diff_pred)+self.c2*self.expected_observation_scale)
         
         return prior_matrices
@@ -1267,9 +1267,7 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         else:
             # Iteration with gradient descent on minus log likelihood
             # Fit
-            print('A', np.max(np.abs(model.m['signal'].m['transit'].depth_model.get_parameters())))
             model_new, cholQ = solve_gp(model, obs, fill_noise_parameters=False)
-            print('B', np.max(np.abs(model_new.m['signal'].m['transit'].depth_model.get_parameters())))
             
             # Hyperparameter update
             hparam_old = model.get_hyperparameters()
@@ -1293,10 +1291,8 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         # Parameter update
         param_old = model.get_parameters()
         param_new = param_old + update_rate*(model_new.get_parameters()-param_old)
-        print('C', np.max(np.abs(model.m['signal'].m['transit'].depth_model.get_parameters())))
         model.set_parameters(param_new)
-        print('D', np.max(np.abs(model.m['signal'].m['transit'].depth_model.get_parameters())))
-
+ 
 
     rng.bit_generator.state = copy.deepcopy(state)
     # Adapt the final model as specified by the caller, typically modifying hyperparameters

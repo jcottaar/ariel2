@@ -241,7 +241,7 @@ def define_prior(obs, model_options, data):
 '''
 Model solving
 '''
-def fit_gp(data, plot_final=False, model_options=ModelOptions(), stop_before_solve = False):
+def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions(), stop_before_solve = False):
     # Performs the Bayesian Inference. 
     # Inputs:
     # -data: measurement data as obtained from kgs.DataLoader()
@@ -276,7 +276,7 @@ def fit_gp(data, plot_final=False, model_options=ModelOptions(), stop_before_sol
 
     # Plot if desired
     if plot_final:
-        visualize_gp(obs, posterior_mean, posterior_samples, data, model_options)
+        visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, simple=plot_simple)
 
     # Lots of sanity checks to catch misbehaving planets in the private test set
 #    if kgs.sanity_checks_active:        #XXX 
@@ -333,6 +333,8 @@ class PredictionModel(kgs.Model):
     starter_model = None
     model_options = None # ModelOptions as defined earlier, configuring the model                                                  
     plot_final = False
+    plot_simple = False
+    fixed_AIRS_sigma = 400e-6 # XXX
     
     # Diagnostics
     results = None
@@ -352,7 +354,7 @@ class PredictionModel(kgs.Model):
         test_data.transits[0].load_to_step(5, test_data, self.loaders)
         
         # Construct and fithe GP
-        results = fit_gp(test_data, model_options=self.model_options, plot_final=self.plot_final)       
+        results = fit_gp(test_data, model_options=self.model_options, plot_final=self.plot_final, plot_simple=self.plot_simple)       
         self.results = results
 
         # Find where in the output we can find the desired transit depth values
@@ -369,6 +371,10 @@ class PredictionModel(kgs.Model):
         sample_labels = results['model_samples'].m['signal'].m['transit'].depth_model.get_prediction(results['model_mean'].m['signal'].m['transit'].obs_wavelength)
         sample_labels = sample_labels[inds,:]-pred_labels[inds,0][:,np.newaxis]
         cov = (sample_labels@sample_labels.T)/sample_labels.shape[1]
+        
+        # XXX
+        if not self.fixed_AIRS_sigma is None:
+            cov[1:,1:] = self.fixed_AIRS_sigma**2
 
         # Sanity checks
        # kgs.sanity_check(np.mean, pred, 'pred_mean', 10, [0, 0.03])
@@ -461,20 +467,21 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     inds_per_wavelength = None
     times_per_wavelength = None
     number_of_extra_parameters = 0
-    base_values = None
+    #base_values = None
     
     # Parameters
     transit_params = None # list of lists, top level is instances, second level is FGS/AIRS
     
     # Configuration
     common_parameters = None
-    Rp_parameter = 3
-    std_value = 1e2
+    Rp_parameter = 4
+    std_values = None
     
     
     def __post_init__(self):
         super().__post_init__()
-        self.common_parameters = [0,1,2]
+        self.common_parameters = [0,1,2,3] # XXXf
+        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102]
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
     
@@ -518,7 +525,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
         
         self.number_of_instances = 1
-        self.base_values = self.get_parameters()[self.depth_model.number_of_parameters:,0]
+        #self.base_values = self.get_parameters()[self.depth_model.number_of_parameters:,0]
 
     def set_parameters_internal(self, to_what):
         # Start filling from depth_model
@@ -580,6 +587,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         return self.depth_model.get_hyperparameters()
 
     def get_observation_relationship_internal(self,obs):
+        #print(self.get_parameters()[self.depth_model.number_of_parameters:])
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
         
@@ -616,22 +624,32 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         return prior_matrices
 
     def get_prior_distribution_internal(self,obs):
-        #print(np.min(self.depth_model.get_parameters()), np.max(self.depth_model.get_parameters()))
-        assert np.max(np.abs(self.depth_model.get_parameters()))>1e-6
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
+        
+        #sigma_values = self.std_value * np.ones(self.number_of_extra_parameters)
+        #sigma_values[4] = self.base_values[4]*self.std_override # regularize SMA
+        #sigma_values[5] = self.base_values[5]*self.std_override # XXX remove when common, and do it for [2]
+        #sigma_values[2] = self.std_override #* self.base_values[2] # regularize SMA
+        sigma_values = []
+        transit_x0 = self.transit_params[0][0].to_x()
+        for i_param in range(len(transit_x0)):
+            if i_param in self.common_parameters:
+                sigma_values.append(self.std_values[i_param])
+            elif not i_param == self.Rp_parameter:
+                sigma_values.append(self.std_values[i_param])
+                sigma_values.append(self.std_values[i_param])
+         
         prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
-            prior_matrices.prior_precision_matrix ,  sp.sparse.eye(self.number_of_extra_parameters)/self.std_value**2
+            prior_matrices.prior_precision_matrix ,  sp.sparse.diags(1/np.array(sigma_values)**2, format=gp.sparse_matrix_str)
             ], format=gp.sparse_matrix_str )
-        prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.base_values])
+        
+        prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.get_parameters()[self.depth_model.number_of_parameters:,0]])
         prior_matrices.number_of_parameters = self.number_of_parameters
         return prior_matrices
 
     def get_prediction_internal(self,obs):
         output = np.zeros((self.number_of_observations, self.number_of_instances))        
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
-        
-        #print(np.min(transit_depths), np.max(transit_depths))
-        assert np.max(np.abs(self.depth_model.get_parameters()))>1e-6
         
         for i_instance in range(self.number_of_instances):
             for i_wavelength in range(len(self.wavelengths)):
@@ -807,10 +825,10 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     obs_no_transit.labels = model_no_transit.m['signal'].get_prediction(obs)
 
     # Means over dimensions    
-    _,ax = plt.subplots(3,3,figsize=(18,18))
-    for i in range(3):
+    _,ax = plt.subplots(1,3,figsize=(18,6))
+    for i in range(1):
         if i==0:
-            plt.sca(ax[i,0])
+            plt.sca(ax[0])
             # plt.plot(obs.wavelengths, np.mean(total, axis=0))
             # plt.plot(obs.wavelengths, np.mean(signal, axis=0))
             wl_unique, result = apply_func_by_wavelength(np.mean, obs)
@@ -824,12 +842,12 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
             if do_AIRS:
                 if not includes_AIRS:
                     continue
-                plt.sca(ax[i,1])
+                plt.sca(ax[1])
                 plt.title('AIRS')
             else:
                 if not includes_FGS:
                     continue
-                plt.sca(ax[i,2])
+                plt.sca(ax[2])
                 plt.title('FGS')
             times = np.unique(obs.df['time'][obs.df['is_AIRS']==do_AIRS])
             plt.plot(times, np.mean(obs.export_matrix(do_AIRS), axis=1))
@@ -844,9 +862,6 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
             if i==2:
                 plt.xlim([data.diagnostics['t_egress']/3600-0.4, data.diagnostics['t_egress']/3600+0.4])
 
-
-    if simple:
-        return
     
     # transit
     _,ax = plt.subplots(1,2,figsize=(12,6))
@@ -872,6 +887,10 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
             plt.title('RMS error = '+str(kgs.rms(vals_corr-vals_pred)))
         except:
             pass
+        
+    if simple:
+        plt.pause(0.001)
+        return
 
 
     # plt.sca(ax[1])    

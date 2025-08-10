@@ -201,7 +201,6 @@ class SimpleModel(kgs.Model):
                 #noise_estimate = ariel_numerics.estimate_noise(self._targets[ii])
                 residual = kgs.rms(self._targets[ii]-self.pred[ii])
                 residual_filtered = ariel_numerics.estimate_noise(self._targets[ii]-self.pred[ii])
-                #print(noise_estimate, residual)
                 ratio = residual-residual_filtered
                 if ii==0:
                     data.diagnostics['simple_residual_diff_FGS'] = ratio
