@@ -272,7 +272,7 @@ def fit_gp(data, plot_final=False, model_options=ModelOptions(), stop_before_sol
     posterior_mean, posterior_samples = gp.solve_gp_nonlinear(prior_model, obs, rng=np.random.default_rng(seed=data.planet_id), \
         update_rate=model_options.update_rate, n_iter=model_options.n_iter, update_hyperparameters_from=0,\
         hyperparameter_method = 'gradient_descent', adapt_func = adapt_func, max_log_update_initial = model_options.max_log_update_hyperparameters,\
-        n_samples = model_options.n_samples_sigma_est)
+        n_samples = model_options.n_samples_sigma_est, fill_noise_parameters=False)
 
     # Plot if desired
     if plot_final:
@@ -377,8 +377,8 @@ class PredictionModel(kgs.Model):
        #     kgs.sanity_check(np.min, sigma, 'sigma_min', 8, [7e-6, 1e-4])
        #     kgs.sanity_check(np.max, sigma, 'sigma_max', 9, [7e-6, 0.0007])
 
-        test_data.spectrum = pred
-        test_data.spectrum_cov = cov
+        test_data.spectrum = copy.deepcopy(pred)
+        test_data.spectrum_cov = copy.deepcopy(cov)
         
         return test_data
 
@@ -468,13 +468,13 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     
     # Configuration
     common_parameters = None
-    Rp_parameter = 4
+    Rp_parameter = 3
     std_value = 1e2
     
     
     def __post_init__(self):
         super().__post_init__()
-        self.common_parameters = [0,1,2,3]
+        self.common_parameters = [0,1,2]
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
     
@@ -616,6 +616,8 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         return prior_matrices
 
     def get_prior_distribution_internal(self,obs):
+        #print(np.min(self.depth_model.get_parameters()), np.max(self.depth_model.get_parameters()))
+        assert np.max(np.abs(self.depth_model.get_parameters()))>1e-6
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
         prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
             prior_matrices.prior_precision_matrix ,  sp.sparse.eye(self.number_of_extra_parameters)/self.std_value**2
@@ -627,6 +629,9 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     def get_prediction_internal(self,obs):
         output = np.zeros((self.number_of_observations, self.number_of_instances))        
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
+        
+        #print(np.min(transit_depths), np.max(transit_depths))
+        assert np.max(np.abs(self.depth_model.get_parameters()))>1e-6
         
         for i_instance in range(self.number_of_instances):
             for i_wavelength in range(len(self.wavelengths)):

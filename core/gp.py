@@ -1242,7 +1242,7 @@ def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True):
         return model, model_samples, cholQ
 
 #@kgs.profile_each_line
-def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_iter = 25, update_rate = 0.1, update_hyperparameters_from=10, hyperparameter_method = 'em', max_log_update_initial=1., fill_noise_parameters=False, adapt_func = lambda x:x):
+def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_iter = 25, update_rate = 0.1, update_hyperparameters_from=10, hyperparameter_method = 'em', max_log_update_initial=1., fill_noise_parameters=True, adapt_func = lambda x:x):
     # Solves a GP model iteratively, each time linearizing around the mean of the posterior of the previous step. Also updates hyperparameters along the way.
     
     assert hyperparameter_method=='em' or hyperparameter_method=='gradient_descent'
@@ -1267,7 +1267,9 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         else:
             # Iteration with gradient descent on minus log likelihood
             # Fit
+            print('A', np.max(np.abs(model.m['signal'].m['transit'].depth_model.get_parameters())))
             model_new, cholQ = solve_gp(model, obs, fill_noise_parameters=False)
+            print('B', np.max(np.abs(model_new.m['signal'].m['transit'].depth_model.get_parameters())))
             
             # Hyperparameter update
             hparam_old = model.get_hyperparameters()
@@ -1291,12 +1293,14 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         # Parameter update
         param_old = model.get_parameters()
         param_new = param_old + update_rate*(model_new.get_parameters()-param_old)
+        print('C', np.max(np.abs(model.m['signal'].m['transit'].depth_model.get_parameters())))
         model.set_parameters(param_new)
+        print('D', np.max(np.abs(model.m['signal'].m['transit'].depth_model.get_parameters())))
 
 
     rng.bit_generator.state = copy.deepcopy(state)
     # Adapt the final model as specified by the caller, typically modifying hyperparameters
     model = adapt_func(model)
     # Final fit, generating the requested number of samples
-    a,b,_ = solve_gp(model, obs, rng=rng, n_samples=n_samples, fill_noise_parameters=True)
+    a,b,_ = solve_gp(model, obs, rng=rng, n_samples=n_samples, fill_noise_parameters=fill_noise_parameters)
     return a,b

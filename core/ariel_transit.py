@@ -8,6 +8,9 @@ import kaggle_support as kgs
 import ariel_numerics
 import matplotlib.pyplot as plt
 import batman
+import math
+
+#a_over_Rs = lambda Rs, Ms, P, Mp=0.0: (((6.67430e-11*((Ms*1.98847e30)+(Mp*5.9722e24))*(P*3600)**2)/(4*math.pi**2))**(1/3))/(Rs*6.957e8)
 
 @dataclass
 class TransitParams(kgs.BaseClass):
@@ -47,6 +50,9 @@ class TransitParams(kgs.BaseClass):
         self.i = x[3]
         self.Rp = x[4]
         self.u = np.array(x[5:])
+        
+      #  self.sma = a_over_Rs(self.Rs, self.Ms, self.P, self.Mp)
+        
 
         if kgs.debugging_mode>=2:
             assert np.all( np.abs(np.array(self.to_x())-np.array(x))<=1e-10 )
@@ -64,8 +70,19 @@ class TransitParams(kgs.BaseClass):
         params.w = self.w   
         params.limb_dark = self.limb_dark
         params.u = self.u
+        if self.P<=0 or self.sma<=0 or any(self.u)<=0:
+            raise kgs.ArielException(6, 'Bad transit parameters')
+        if self.Rp==0:
+            print(self)
+            raise 'stop'
+        if self.Rp<0:
+            params.Rp *= -1
         model=batman.TransitModel(params, times, exp_time=(times[1]-times[0]), supersample_factor=self.supersample_factor, max_err=self.max_err)
-        return model.light_curve(params)  
+        res = model.light_curve(params)  
+        if self.Rp<0:
+            res = 2-res
+        assert not np.any(np.isnan(res))
+        return res
     
     def light_curve_derivatives(self,times,which):
         base_curve = self.light_curve(times)

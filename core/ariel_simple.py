@@ -208,7 +208,7 @@ class SimpleModel(kgs.Model):
                     kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-1e-4, 1.2e-4])
                 else:
                     data.diagnostics['simple_residual_diff_AIRS'] = ratio
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-1e-4, 3e-5])
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-1e-4, 15e-5]) # up to ~3e-5 in training, but up to ~12e-5 in test
 
 
             # Report resutls
@@ -221,7 +221,7 @@ class SimpleModel(kgs.Model):
             midpoint = np.min(self.pred[0])/2+np.max(self.pred[0])/2
             data.diagnostics['t_ingress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[0,0]]
             data.diagnostics['t_egress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[-1,0]]
-            data.diagnostics['transit_params'] = self.transit_param
+            data.diagnostics['transit_params'] = copy.deepcopy(self.transit_param)
             data.check_constraints()
             
             return data

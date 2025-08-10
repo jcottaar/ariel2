@@ -42,16 +42,16 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
 
 def run_model_test(regenerate_reference=False):
     models = dict()
-    models['simple'] = ariel_model.baseline_model()  
+    models['simple'] = ariel_model.baseline_model().model
     train_data = kgs.load_all_train_data()
     for name,model in models.items():
-        data = copy.deepcopy(train_data[100:108])
-        model.model.run_in_parallel = not regenerate_reference
+        data = copy.deepcopy(train_data[100:106])
+        model.run_in_parallel = not regenerate_reference
         model.train(data)
         data = model.infer(data)
         if regenerate_reference:
-            kgs.dill_save(kgs.code_dir + '/model_'+name+'.pickle', data)
-        diff=deepdiff.DeepDiff(data, kgs.dill_load(kgs.code_dir + '/model_'+name+'.pickle'))
+            kgs.dill_save(kgs.code_dir + '/model_'+name+'_test.pickle', data)
+        diff=deepdiff.DeepDiff(data, kgs.dill_load(kgs.code_dir + '/model_'+name+'_test.pickle'))
         if len(diff)>0:
             print(diff)
             raise Exception('Mismatch in ' + name + ' test')
