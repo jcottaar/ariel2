@@ -175,9 +175,9 @@ def define_prior(obs, model_options, data):
     if model_options.use_training_labels:
         # Use fixed transit depth
         transit_depth_model = gp.FixedValue()
-        transit_depth_model.offset = np.nan*obs.df['time'].to_numpy()
-        for i in range(len(data.diagnostics['training_spectrum'])):
-            transit_depth_model.offset[np.isclose(obs.df['wavelength'], kgs.wavelengths)] = -data['training_spectrum'][i]
+        transit_depth_model.offset = -data.diagnostics['training_spectrum']#np.nan*obs.df['time'].to_numpy()
+        #for i in range(len(data.diagnostics['training_spectrum'])):
+        #    transit_depth_model.offset[np.isclose(obs.df['wavelength'], kgs.wavelengths[i])] = -data.diagnostics['training_spectrum'][i]
         assert(not np.any(np.isnan(transit_depth_model.offset)))
 
     ## Combine the models above to create the full transit model
@@ -903,14 +903,83 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     # drift
     _,ax = plt.subplots(1,2,figsize=(12,6))
     plt.sca(ax[0])
-    obs_AIRS, obs_FGS =  posterior_mean.m['signal'].m['drift'].split_obs(obs)
-    plt.scatter(obs_AIRS.df['time'], posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS))
-    plt.scatter(obs_FGS.df['time'], posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS))
+    # obs_AIRS, obs_FGS =  posterior_mean.m['signal'].m['drift'].split_obs(obs)
+    # plt.scatter(obs_AIRS.df['time'], posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS))
+    # plt.scatter(obs_FGS.df['time'], posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS))
+    # plt.grid(True)
+    # plt.ylabel('Mean over wavelengths')
+    # plt.xlabel('Time [h]')
+    # plt.legend(['AIRS', 'FGS'])
+    # plt.title('Non-spectral drift')  
+    
+    obs_AIRS, obs_FGS = posterior_mean.m['signal'].m['drift'].split_obs(obs)
+
+    # Scatter plots (unchanged)
+    sc_air = plt.scatter(
+        obs_AIRS.df['time'],
+        posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
+    )
+    sc_fgs = plt.scatter(
+        obs_FGS.df['time'],
+        posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS)
+    )
+
+    # --- Add 3rd-order polynomial fits over points (excluded from legend) ---
+    def _flatten_numeric(a):
+        a = np.asarray(a)
+        if a.ndim > 1:
+            a = np.squeeze(a)
+        return a.ravel().astype(float, copy=False)
+
+    def _scatter_color(sc):
+        # Try facecolor first, then edgecolor; if none, return None to let Matplotlib choose
+        fc = sc.get_facecolors()
+        if fc is not None and len(fc) > 0:
+            return fc[0]
+        ec = sc.get_edgecolors()
+        if ec is not None and len(ec) > 0:
+            return ec[0]
+        return None
+
+    def _fit_and_plot(x, y, sc):
+        x = _flatten_numeric(x)
+        y = _flatten_numeric(y)
+        m = np.isfinite(x) & np.isfinite(y)
+        x, y = x[m], y[m]
+        if x.size < 2:
+            return  # not enough data
+        # Use cubic if possible; otherwise fall back to the max allowed degree
+        deg = min(3, np.unique(x).size - 1)
+        if deg < 1:
+            return
+        p = np.poly1d(np.polyfit(x, y, deg))
+        xs = np.linspace(x.min(), x.max(), max(50, len(x)))
+        plt.plot(
+            xs, p(xs),
+            label="_nolegend_",
+            zorder=sc.get_zorder() + 1,
+            color='black'
+        )
+
+    # AIRS fit
+    xA = obs_AIRS.df['time']
+    yA = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
+    _fit_and_plot(xA, yA, sc_air)
+
+    # FGS fit
+    xF = obs_FGS.df['time']
+    yF = posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS)
+    _fit_and_plot(xF, yF, sc_fgs)
+    # --- end fits ---
+
+    # Formatting (unchanged)
     plt.grid(True)
     plt.ylabel('Mean over wavelengths')
     plt.xlabel('Time [h]')
     plt.legend(['AIRS', 'FGS'])
-    plt.title('Non-spectral drift')  
+    plt.title('Non-spectral drift')
+
+
     if 'spectral' in posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m:
         plt.sca(ax[1])
         obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['spectral'].get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)

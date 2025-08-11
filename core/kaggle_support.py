@@ -24,7 +24,7 @@ import h5py
 import time
 import sklearn
 import shutil
-#import torch
+import torch
 import inspect
 from tqdm import tqdm
 import hashlib
@@ -36,6 +36,10 @@ Determine environment and globals
 
 if os.path.isdir('/mnt/d/ariel2/'):
     env = 'local'
+    d_drive = '/mnt/d/'    
+elif os.path.isdir('d:/'):
+    env = 'local_windows'
+    d_drive = 'd:/'   
 else:
     env = 'kaggle'
 print(env)
@@ -46,12 +50,12 @@ verbosity = 1
 disable_any_parallel = False
 
 match env:
-    case 'local':
-        data_dir = '/mnt/d/ariel2/data/'
-        temp_dir = '/mnt/d/ariel2/temp/'             
-        code_dir = '/mnt/d/ariel2/code/core/' 
-        csv_dir = '/mnt/d/ariel2/'
-        loader_cache_dir = '/mnt/d/ariel2/loader_cache/'
+    case 'local' | 'local_windows':
+        data_dir = d_drive+'/ariel2/data/'
+        temp_dir = d_drive+'/ariel2/temp/'             
+        code_dir = d_drive+'/ariel2/code/core/' 
+        csv_dir = d_drive+'/ariel2/'
+        loader_cache_dir = d_drive+'/ariel2/loader_cache/'
     case 'kaggle':
         data_dir = '/kaggle/input/ariel-data-challenge-2025/'
         temp_dir = '/temp/'           
@@ -62,12 +66,14 @@ os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
+n_workers = 3
 def recommend_n_workers():
-    return 2 if env=='kaggle' else 7#torch.cuda.device_count()
+    return n_workers
+n_threads = 1
 
-n_cuda_devices = recommend_n_workers()
+n_cuda_devices = torch.cuda.device_count()
 process_name = multiprocess.current_process().name
-if not multiprocess.current_process().name == "MainProcess" and env!='local':
+if not multiprocess.current_process().name == "MainProcess":
     print(process_name, multiprocess.current_process()._identity[0])  
     os.environ["CUDA_VISIBLE_DEVICES"] = str(np.mod(multiprocess.current_process()._identity[0], n_cuda_devices))
     print('CUDA_VISIBLE_DEVICES=', os.environ["CUDA_VISIBLE_DEVICES"]);
@@ -180,7 +186,7 @@ def download_kaggle_dataset(dataset_name, destination, skip_download=False):
     subprocess.run('kaggle datasets metadata -p ' + destination + ' ' + dataset_name, shell=True)
 
 def upload_kaggle_dataset(source):
-    if env=='local':
+    if env=='local_windows':
         source=source.replace('/', '\\')
     subprocess.run('kaggle datasets version -p ' + source + ' -m ''Update''', shell=True)
 
@@ -542,18 +548,26 @@ General model definition
 '''
 # Function is used below, I ran into issues with multiprocessing if it was not a top-level function
 model_parallel = None
-def infer_internal_single_parallel(data):    
+def infer_internal_single_parallel(data):   
     try:        
         global model_parallel
         global sanity_checks_active
         global sanity_checks_without_errors
         global debugging_mode
         global profiling
+        global n_threads
         if model_parallel is None:
-            model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling = dill_load(temp_dir+'parallel.pickle')
+            model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads = dill_load(temp_dir+'parallel.pickle')
         t=time.time()
         orig_step = data.transits[0].loading_step
-        data = model_parallel._infer_single(data)
+        from threadpoolctl import threadpool_limits
+        from contextlib import nullcontext
+        if n_threads==np.inf:
+            env = nullcontext()
+        else:
+            env = threadpool_limits(limits=n_threads)                 
+        with env:
+            data = model_parallel._infer_single(data)
         data.load_to_step(orig_step,model_parallel.loaders)        
         return data
     except Exception as err:
@@ -622,14 +636,16 @@ class Model(BaseClass):
         # Subclass must implement this OR _infer_single
         if self.run_in_parallel and not disable_any_parallel:  
             clear_gpu()
-            dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling))
+            dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads))
             try:
-                with multiprocess.Pool(recommend_n_workers()) as p:                   
-                    result = list(tqdm(
-                        p.imap(infer_internal_single_parallel, test_data),
-                        total=len(test_data),
-                        desc="Processing in parallel", smoothing = 0.05
-                        ))
+                #from threadpoolctl import threadpool_limits
+                #with threadpool_limits(limits=1):  # or 2 if each task is light
+                    with multiprocess.Pool(recommend_n_workers()) as p:                   
+                        result = list(tqdm(
+                            p.imap(infer_internal_single_parallel, test_data),
+                            total=len(test_data),
+                            desc="Processing in parallel", smoothing = 0.05
+                            ))
             except Exception as err:
                 print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
                 raise
@@ -639,7 +655,14 @@ class Model(BaseClass):
             for d in tqdm(test_data, desc="Inferring", disable = len(test_data)<=1, smoothing = 0.05):     
                 data=copy.deepcopy(d)
                 orig_step = data.transits[0].loading_step
-                data = self._infer_single(data)
+                from threadpoolctl import threadpool_limits
+                from contextlib import nullcontext
+                if n_threads==np.inf:
+                    env = nullcontext()
+                else:
+                    env = threadpool_limits(limits=n_threads)                 
+                with env:
+                    data = self._infer_single(data)
                 if len(test_data)>1:
                     data.load_to_step(orig_step,self.loaders)     
                 result.append(data)                
