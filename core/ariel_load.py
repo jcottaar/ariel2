@@ -329,6 +329,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
         # Remove cosmic rays
         if self.remove_cosmic_rays:
             data.data = remove_cosmic_rays(data.data)
+            inpaint_along_axis_inplace(data.data,0)
         if kgs.profiling: cp.cuda.Device().synchronize()
         
         # Flip AIRS to have ascending wavelengths
@@ -360,8 +361,9 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     
     #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
-        if self.inpainting_time:
-            inpaint_along_axis_inplace(data.data,0)
+        assert self.inpainting_time # actually done above
+        #if self.inpainting_time:
+        #    inpaint_along_axis_inplace(data.data,0)
         if self.inpainting_wavelength:
             inpaint_vectorized(data.data)
         if self.inpainting_2d:            

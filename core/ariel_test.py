@@ -51,6 +51,9 @@ def run_model_test(regenerate_reference=False):
         data = model.infer(data)
         if regenerate_reference:
             kgs.dill_save(kgs.code_dir + '/model_'+name+'_test.pickle', data)
+        else:
+            for d in data:
+                del d.diagnostics['sanity_checks_par']
         diff=deepdiff.DeepDiff(data, kgs.dill_load(kgs.code_dir + '/model_'+name+'_test.pickle'))
         if len(diff)>0:
             print(diff)

@@ -556,8 +556,10 @@ def infer_internal_single_parallel(data):
         global debugging_mode
         global profiling
         global n_threads
+        global sanity_checks
         if model_parallel is None:
             model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads = dill_load(temp_dir+'parallel.pickle')
+        sanity_checks = dict()
         t=time.time()
         orig_step = data.transits[0].loading_step
         from threadpoolctl import threadpool_limits
@@ -569,6 +571,7 @@ def infer_internal_single_parallel(data):
         with env:
             data = model_parallel._infer_single(data)
         data.load_to_step(orig_step,model_parallel.loaders)        
+        data.diagnostics['sanity_checks_par'] = sanity_checks
         return data
     except Exception as err:
         import traceback
