@@ -416,6 +416,9 @@ class Transit(BaseClass):
             d.check_constraints()
     
     def load_to_step(self, target_step, planet, loaders):
+        self.check_constraints()
+        if target_step == self.loading_step:
+            return
         caching = target_step in loaders[0].cache_steps
         if caching:
             cache_file_name = loader_cache_dir + '/' + hashlib.sha256(dill.dumps(loaders)).hexdigest()[:10] + '_' + str(planet.planet_id) + '_' + str(self.observation_number) + '_' + str(planet.is_train) + '_' + str(target_step) +'.pickle';
@@ -426,9 +429,6 @@ class Transit(BaseClass):
                 self.check_constraints()
                 return
             #cache_file_name = loader_cache_dir + '/' + 
-        self.check_constraints()
-        if target_step == self.loading_step:
-            return
         if target_step<self.loading_step:
             self.loading_step = 0
             self.data = Transit().data

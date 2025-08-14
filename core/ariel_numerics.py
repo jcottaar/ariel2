@@ -103,6 +103,65 @@ def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
 
     return result
 
+def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
+    """
+    Vectorized CuPy version.
+    If `ts` is 1D (N,), returns a Python float.
+    If `ts` is 2D (N, K), returns a 1D CuPy array of length K (one value per column).
+    """
+    ts = cp.asarray(ts)
+    if ts.ndim == 1:
+        ts = ts[:, None]
+        squeeze_out = True
+    elif ts.ndim == 2:
+        squeeze_out = False
+    else:
+        raise ValueError("`ts` must be 1D or 2D (N,) or (N, K).")
+
+    N, K = ts.shape
+    w = window_size
+    p = degree + 1
+    if N < w:
+        raise ValueError(f"Time series length ({int(N)}) is shorter than window size ({w}).")
+    if w <= p:
+        raise ValueError(f"Window size ({w}) must be > degree+1 ({p}).")
+
+    # Sliding windows along time axis -> (num_windows, K, w)
+    windows = cp.lib.stride_tricks.sliding_window_view(ts, w, axis=0)  # (N-w+1, K, w)
+
+    # Vandermonde + pseudoinverse on GPU (shared across columns)
+    x = cp.arange(w)
+    V = cp.vander(x, p)          # (w, p)
+    pinv = cp.linalg.pinv(V)     # (p, w)
+
+    # Fit polynomial in each window for each column:
+    # coeffs: (num_windows, K, p)
+    coeffs = cp.tensordot(windows, pinv.T, axes=([2], [0]))
+    # fitted: (num_windows, K, w)
+    fitted = cp.tensordot(coeffs, V.T, axes=([2], [0]))
+
+    # Residual RMS per window per column
+    residuals = windows - fitted
+    rms = cp.sqrt(cp.mean(residuals**2, axis=2))  # (num_windows, K)
+
+    # Bias correction
+    correction = cp.sqrt(w / (w - p))
+    rms_corr = rms * correction  # (num_windows, K)
+
+    # Combine across windows for each column
+    if combine_method == 'rms':
+        result = cp.sqrt(cp.mean(rms_corr**2, axis=0))   # (K,)
+    elif combine_method == 'mean':
+        result = cp.mean(rms_corr, axis=0)               # (K,)
+    elif combine_method == 'median':
+        result = cp.median(rms_corr, axis=0)             # (K,)
+    else:
+        raise ValueError("combine_method must be 'rms', 'mean' or 'median'")
+
+    if squeeze_out:
+        return result[0].item()
+    return result
+
 import cupy as cp
 
 def estimate_noise_cov_cp(ts, window_size=10, degree=2):
@@ -211,9 +270,9 @@ def nan_pca(mat, n_components, max_iter=50, tol=1e-6,
             mask_j = mask[:, j0:j1]   # (samples, batch)
             X_j = X[:, j0:j1]
             # build batch A and B: (batch, k, k) and (batch, k)
-            A2 = cp.einsum('ip,ij,iq->jpq', W, mask_j, W)
-            B2 = cp.einsum('ip,ij,ij->jp', W, mask_j, X_j)
-            C[:, j0:j1] = cp.linalg.solve(A2, B2[..., None]).squeeze(-1).T
+            A = cp.einsum('ip,ij,iq->jpq', W, mask_j, W)
+            B = cp.einsum('ip,ij,ij->jp', W, mask_j, X_j)
+            C[:, j0:j1] = cp.linalg.solve(A, B[..., None]).squeeze(-1).T
         C, _ = cp.linalg.qr(C.T)
         C = C.T
 
@@ -250,9 +309,10 @@ def nan_pca(mat, n_components, max_iter=50, tol=1e-6,
 import cupy as cp
 
 def lstsq_nanrows_normal_eq_with_pinv_sigma(
-    dat: cp.ndarray,
-    A: cp.ndarray,
-    sigma: cp.ndarray | None = None
+    dat,
+    A,
+    sigma = None,
+    return_A_pinv_w = True
 ):
     """
     Vectorized weighted least squares via normal equations, returning coefficients
@@ -298,10 +358,13 @@ def lstsq_nanrows_normal_eq_with_pinv_sigma(
 
     # Weighted pseudoinverse: (A^T W^2 A)^{-1} A^T W^2
     # Note: A^T W^2 = (A_w^T) * w[None, :]
-    A_pinv_w = cp.linalg.solve(AtA, (A_w.T * w[None, :]))  # (P, N_valid)
+    if return_A_pinv_w:        
+        A_pinv_w = cp.linalg.solve(AtA, (A_w.T * w[None, :]))  # (P, N_valid)
+        return coeffs, A_pinv_w, mask
+    else:
+        return coeffs,mask
 
-    return coeffs, A_pinv_w, mask
-
+    
 
 import cupy as cp
 from cupyx.scipy.linalg import solve_triangular

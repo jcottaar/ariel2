@@ -471,17 +471,20 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     
     # Parameters
     transit_params = None # list of lists, top level is instances, second level is FGS/AIRS
+    AIRS_u_slopes = None
     
     # Configuration
     common_parameters = None
     Rp_parameter = 4
     std_values = None
+    fit_slopes = True
     
     
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [0,1,2,3] # XXXf
-        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102]
+        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1.]
+        self.AIRS_u_slopes = [[0,0]]
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
     
@@ -519,7 +522,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         self.obs_wavelength.labels = np.zeros((len(self.wavelengths),1))
         
         self.depth_model.initialize(self.obs_wavelength, number_of_instances)
-        self.number_of_extra_parameters = 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters)
+        self.number_of_extra_parameters = 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters) + 2*self.fit_slopes
         self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
@@ -533,6 +536,9 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
   
         base_params = self.transit_params[0]
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
+        if self.fit_slopes:
+            self.AIRS_u_slopes = [copy.deepcopy(self.AIRS_u_slopes[0]) for _ in range(self.number_of_instances)]
+        
   
         # Loop over each instance and rebuild transit_params
         n_params = len(self.transit_params[0][0].to_x())
@@ -560,6 +566,10 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
             # Update transit_params from x
             self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None;
             self.transit_params[i_instance][1].from_x(transit_x1);self.transit_params[i_instance][1].Rp = None;
+            
+            if self.fit_slopes:                
+                self.AIRS_u_slopes[i_instance] = list(to_what[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]), i_instance])
+                cur_pos += len(self.AIRS_u_slopes[0])
 
             assert cur_pos == self.number_of_parameters
         
@@ -577,6 +587,10 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
                 elif not i_param == self.Rp_parameter:
                     x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
                     x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
+            if self.fit_slopes:
+                x[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]),i_instance] = self.AIRS_u_slopes[i_instance]
+                cur_pos+=len(self.AIRS_u_slopes[0])
+            
             assert(cur_pos==self.number_of_parameters)
         return x
 
@@ -594,8 +608,12 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         # Design matrix for transit depth parameters
         design_matrix_rp = np.zeros((self.number_of_observations, len(self.wavelengths)))
         for i_wavelength in range(len(self.wavelengths)):
-            this_transit_params = self.transit_params[0][self.is_AIRS[i_wavelength]]
+            this_transit_params = copy.deepcopy(self.transit_params[0][self.is_AIRS[i_wavelength]])
             this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, 0])
+            if self.fit_slopes and self.is_AIRS[i_wavelength]:
+                for ii in range(len(this_transit_params.u)):
+                    #pass
+                    this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-np.mean(self.wavelengths[self.is_AIRS[i_wavelength]]))*self.AIRS_u_slopes[0][ii]
             derivatives = this_transit_params.light_curve_derivatives(self.times_per_wavelength[i_wavelength], [self.Rp_parameter])
             design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = derivatives[0] * d_msqrtabs(transit_depths[i_wavelength, 0])
             this_transit_params.Rp = None
@@ -638,6 +656,9 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
             elif not i_param == self.Rp_parameter:
                 sigma_values.append(self.std_values[i_param])
                 sigma_values.append(self.std_values[i_param])
+        if self.fit_slopes:
+            for ii in range(len(self.AIRS_u_slopes[0])):
+                sigma_values.append(self.std_values[-1])
          
         prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
             prior_matrices.prior_precision_matrix ,  sp.sparse.diags(1/np.array(sigma_values)**2, format=gp.sparse_matrix_str)
@@ -653,8 +674,11 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
         
         for i_instance in range(self.number_of_instances):
             for i_wavelength in range(len(self.wavelengths)):
-                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength]]
+                this_transit_params = copy.deepcopy(self.transit_params[i_instance][self.is_AIRS[i_wavelength]])
                 this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
+                if self.fit_slopes and self.is_AIRS[i_wavelength]:
+                    for ii in range(len(this_transit_params.u)):
+                        this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-np.mean(self.wavelengths[self.is_AIRS[i_wavelength]]))*self.AIRS_u_slopes[i_instance][ii]
                 light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
                 output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
                 this_transit_params.Rp = None

@@ -144,6 +144,59 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
     new_shape = (n_bins, bin_size) + trimmed.shape[1:]
     return trimmed.reshape(new_shape).mean(axis=1)
 
+pca_data = kgs.dill_load(kgs.temp_dir + '/explore_bad_pixels_pca.pickle')[1]
+
+@kgs.profile_each_line
+def remove_bad_pixels_pca(data, components, n_components, noise_est_threshold, residual_threshold, also_remove_mean):
+    # data: (time) x (pixel) x (wavelength)
+    # modifies in place
+    for i_wavelength in range(data.shape[2]):
+        this_data = data[:,:,i_wavelength]        
+        n_removed=0        
+        noise_est = cp.ones(this_data.shape[1])
+        #for ii in range(this_data.shape[1]):
+        #   noise_est[ii] = ariel_numerics.estimate_noise_cp(this_data[:,ii])
+        NN=100
+        for ii in range(this_data.shape[1]//NN+1):            
+            maxind=min((this_data.shape[1], (ii+1)*NN))
+            noise_est[ii*NN:maxind] = ariel_numerics.estimate_noise_cp(this_data[:,ii*NN:maxind])
+       # noise_est[cp.isnan(noise_est)]=cp.nanmean(noise_est)
+        noise_est[noise_est<10] = 10
+        data_mean = cp.mean(this_data,0)
+        noise_est_threshold_cp = cp.array(noise_est_threshold)
+        n_nan = cp.sum(cp.isnan(this_data))
+        this_data[:,(data_mean<0) | (noise_est>noise_est_threshold*cp.sqrt(data_mean))] = cp.nan
+        if cp.sum(cp.isnan(this_data))!=n_nan:
+            print('removing noise_est')
+        # for ii in range(this_data.shape[1]):
+        #    if (data_mean[ii]<0 or noise_est[ii]>noise_est_threshold*cp.sqrt(data_mean[ii])):
+        # #       #print(i_wavelength, 'noise_est', noise_est[ii]/cp.sqrt(data_mean[ii]))
+        #        this_data[:,ii] = cp.nan
+        #        #noise_est[ii] = cp.nan
+        while True:            
+            #this_data[:,15*32+15]=0
+            #print(this_data.shape)
+            data_mean = cp.mean(this_data,0)
+            #print(data_mean.shape)
+            design_matrix = cp.stack([cp.ones(data_mean.shape[0])]+[c[0,:] for c in components[i_wavelength][0:n_components]]).T#[
+            #design_matrix[:,1:] = design_matrix[:,1:]-cp.mean(design_matrix[:,1:],1)
+            #print(design_matrix.shape)            
+            coeffs = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(data_mean[:,None], design_matrix, sigma=noise_est, return_A_pinv_w=False)
+            residual = (data_mean[:,None]-design_matrix@coeffs[0])[:,0]
+            residual_scaled = residual/noise_est*cp.sqrt(this_data.shape[0])
+            residual_scaled[cp.isnan(residual_scaled)] = 0
+            if cp.any(cp.abs(residual_scaled)>residual_threshold):
+                print('removing residual')
+                #print(i_wavelength, cp.max(cp.abs(residual_scaled)))
+                this_data[:,cp.argmax(cp.abs(residual_scaled))] = cp.nan
+                #noise_est[cp.argmax(cp.abs(residual_scaled))] = cp.nan
+                n_removed+=1
+            else:
+                break
+        if also_remove_mean:
+            #print('coeffs0', coeffs[0][0][0])
+            this_data[...] -= coeffs[0][0][0]
+
 @dataclass
 class LoadRawData(kgs.BaseClass):   
     
@@ -238,7 +291,8 @@ class ApplyPixelCorrections(kgs.BaseClass):
             if self.mask_hot:                
                 signal[:, hot] = cp.nan
             else:
-                print('deal with extremely negative dark in test set first...also more sanity checks may fail')
+                pass
+                #print('deal with extremely negative dark in test set first...also more sanity checks may fail')
             if self.mask_dead:
                 signal[:, dead] = cp.nan
             return signal
@@ -251,22 +305,24 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def clean_dark(signal, dark, dt):    
             signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
-            if self.mask_hot:
-                kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.01, 0.01]) 
-                kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0.005, 0.02])        
-            else:
-                kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-np.inf-0.05, 0.01]) 
-                kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.]) 
+            if self.mask_dead:
+                if self.mask_hot:
+                    kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.01, 0.01]) 
+                    kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0.005, 0.02])        
+                else:
+                    kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-np.inf-0.05, 0.01]) 
+                    kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.]) 
             return signal
 
         def correct_flat_field(flat, signal):        
             signal = signal / flat[cp.newaxis, :,:]
-            if self.mask_hot:
-                kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.05]) # ~0.574 in test set
-                kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.95, 1.2])  
-            else:
-                kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
-                kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2]) 
+            if self.mask_dead:
+                if self.mask_hot:
+                    kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.05]) # ~0.574 in test set
+                    kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.95, 1.2])  
+                else:
+                    kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
+                    kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2]) 
             return signal
         
         def remove_cosmic_rays(signal):
@@ -318,7 +374,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
         # Flat field
         if self.flat_field:
             data.data = correct_flat_field(flat, data.data)
-        if kgs.profiling: cp.cuda.Device().synchronize()        
+        if kgs.profiling: cp.cuda.Device().synchronize()     
                  
         # Correlated double sampling    
         data.data = data.data[1::2,:,:]-data.data[0::2,:,:]
@@ -346,6 +402,9 @@ class ApplyPixelCorrections(kgs.BaseClass):
 @dataclass
 class ApplyFullSensorCorrections(kgs.BaseClass):
     
+    remove_bad_pixels_pca = False
+    remove_bad_pixels_pca_inputs = None
+    
     inpainting_time = True
     inpainting_wavelength = False
     inpainting_2d = False
@@ -361,32 +420,40 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     
     #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
+        if self.remove_bad_pixels_pca:
+            if data.is_FGS:                
+                dat = cp.reshape(data.data, (-1,1024))[:,:,None]
+                remove_bad_pixels_pca(dat, *self.remove_bad_pixels_pca_inputs)
+            else:
+                remove_bad_pixels_pca(data.data, *self.remove_bad_pixels_pca_inputs)
         assert self.inpainting_time # actually done above
         #if self.inpainting_time:
         #    inpaint_along_axis_inplace(data.data,0)
         if self.inpainting_wavelength:
             inpaint_vectorized(data.data)
-        if self.inpainting_2d:            
+        if self.inpainting_2d:     
             temp = cp.transpose(copy.deepcopy(data.data), (0,2,1))
             inpaint_vectorized(data.data)
             inpaint_vectorized(temp)
             data.data = (data.data+cp.transpose(temp, (0,2,1)))/2
-            
         #data.data -= self.remove_constant
         
-        if self.remove_background_based_on_rows:
+        #if self.remove_background_based_on_rows:
+        if not data.is_FGS:
             background_data = cp.concatenate((data.data[:,:self.remove_background_n_rows,:], data.data[:,-self.remove_background_n_rows:,:]), axis=1)
             background_estimate = cp.mean(background_data, axis=(0,1))
             if self.remove_background_remove_used_rows:
                 to_keep = cp.full(data.data.shape[1], False)
                 to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
                 data.data = data.data[:,to_keep,:]
-            data.data -= background_estimate[None,None,:]
+            if self.remove_background_based_on_rows:
+                data.data -= background_estimate[None,None,:]
             
         if self.remove_background_based_on_pixels:
             mean_per_pixel = cp.mean(data.data, axis=0).flatten()
             #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
             background_estimate = cp.mean(cp.sort(mean_per_pixel)[:self.remove_background_pixels])
+            #print(background_estimate)
             data.data -= background_estimate
  
 @dataclass
@@ -432,6 +499,7 @@ def default_loaders():
     loaders[0].apply_full_sensor_corrections.inpainting_2d=True
     loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True
     loaders[0].apply_time_binning.time_binning = 50
+    loaders[0].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[0:1],4,100,5,False]
     
     # AIRS configuration
     loaders[1].apply_pixel_corrections.clip_columns=True
@@ -440,5 +508,6 @@ def default_loaders():
     loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
     loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=True
     loaders[1].apply_time_binning.time_binning = 5
+    loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
     
     return loaders
