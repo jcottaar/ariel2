@@ -537,7 +537,7 @@ def load_data(planet_id, is_train):
     return data
 
 def load_all_train_data():
-    return [load_data(ind,True) for ind in train_star_info['planet_id']]
+    return [load_data(ind,True) for ind in train_star_info['planet_id'] if ind!=2486733311]
 
 def load_all_test_data():
     return [load_data(int(ind),False) for ind in test_star_info['planet_id']]
