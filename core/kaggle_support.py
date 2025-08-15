@@ -504,9 +504,9 @@ class TransitLoader(BaseClass):
             case 1:
                 self.apply_pixel_corrections(data, planet, observation_number)
             case 2:
-                self.apply_full_sensor_corrections(data, planet, observation_number)
-            case 3:
                 self.apply_time_binning(data, planet, observation_number)
+            case 3:
+                self.apply_full_sensor_corrections(data, planet, observation_number)            
             case 4:
                 self.apply_wavelength_binning(data, planet, observation_number)
             case _:
