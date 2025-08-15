@@ -497,7 +497,7 @@ def default_loaders():
     
     # FGS configuration   
     loaders[0].apply_full_sensor_corrections.inpainting_2d=True
-    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True
+    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = False
     loaders[0].apply_time_binning.time_binning = 50
     loaders[0].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[0:1],4,100,5,False]
     
@@ -506,7 +506,7 @@ def default_loaders():
     loaders[1].apply_pixel_corrections.clip_columns1=39
     loaders[1].apply_pixel_corrections.clip_columns2=321    
     loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
-    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=True
+    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=False
     loaders[1].apply_time_binning.time_binning = 5
     loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
     
