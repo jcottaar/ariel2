@@ -511,3 +511,45 @@ def default_loaders():
     loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
     
     return loaders
+
+
+def raw_data_diagnostics(data, observation_number, loaders):
+    
+    transit = data.transits[observation_number]
+    
+    transit.load_to_step(0, data, loaders)
+    transit.load_to_step(2, data, loaders)
+    
+    plt.figure()
+    plt.imshow(cp.log(cp.mean(transit.data[0].data,0)).get())
+    plt.colorbar()
+    plt.title('FGS mean over time')
+    
+    plt.figure()
+    plt.imshow(cp.log(cp.mean(transit.data[1].data,0)).get(), aspect='auto', interpolation='none')
+    plt.colorbar()
+    plt.title('AIRS mean over time')
+    
+     
+    def plots_on_full_signal():
+        _,ax = plt.subplots(1,3,figsize=(24,8))
+        plt.sca(ax[0])
+        plt.plot(cp.nanmean(transit.data[0].data,(1,2)).get())
+        plt.sca(ax[1])
+        M=cp.mean(transit.data[1].data,1)
+        plt.imshow(M.get().T, aspect='auto', interpolation='none')
+        plt.sca(ax[2])
+        plt.imshow((M-np.mean(M,0)).get().T, aspect='auto', interpolation='none')
+    plots_on_full_signal()
+    
+    transit.load_to_step(3, data, loaders)
+    plots_on_full_signal()
+    
+    transit.load_to_step(4, data, loaders)
+    plots_on_full_signal()
+    
+    transit.load_to_step(0, data, loaders)
+    
+   
+        
+        

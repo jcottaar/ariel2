@@ -585,7 +585,7 @@ def infer_internal_single_parallel(data):
 class Model(BaseClass):
     # Loads one or more cryoET measuerements
     state: int = field(init=False, default=0) # 0: untrained, 1: trained    
-    run_in_parallel: bool = field(init=False, default=False) 
+    run_in_parallel: bool = field(init=True, default=False) 
 
     loaders: list = field(init=True, default=None)
     

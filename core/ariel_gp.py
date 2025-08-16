@@ -350,7 +350,7 @@ class PredictionModel(kgs.Model):
     model_options = None # ModelOptions as defined earlier, configuring the model                                                  
     plot_final = False
     plot_simple = False
-    fixed_AIRS_sigma = 400e-6 # XXX
+    fixed_AIRS_sigma = None #400e-6 #
     
     # Diagnostics
     results = None
@@ -388,7 +388,6 @@ class PredictionModel(kgs.Model):
         sample_labels = sample_labels[inds,:]-pred_labels[inds,0][:,np.newaxis]
         cov = (sample_labels@sample_labels.T)/sample_labels.shape[1]
         
-        # XXX
         if not self.fixed_AIRS_sigma is None:
             cov[1:,1:] = self.fixed_AIRS_sigma**2
 
