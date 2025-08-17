@@ -45,6 +45,35 @@ def inpaint_along_axis_inplace(arr, axis=0):
             flat_arr[:, i] = cp.interp(x, valid_x, valid_y)
 
     # No need to move axes back — arr was modified in-place through views
+    
+pca_data = kgs.dill_load(kgs.calibration_dir + '/explore_bad_pixels_pca.pickle')
+coeff_data = kgs.dill_load(kgs.temp_dir+'/explore_base_shape_from_pca_coeff_list.pickle')
+
+@dataclass
+class apply_pca_modelOptions(kgs.BaseClass):
+    n_components: int = field(init=True, default=0)
+    
+    include_diagnostics: bool = field(init=True, default=False)
+
+def apply_pca_model(data, wavelength_ids, options):
+    options.check_constraints()
+    
+    residual = copy.deepcopy(data)
+    weighted_coeffs = cp.empty((data.shape[0], data.shape[2]))
+    for i_data, i_wavelength in enumerate(wavelength_ids):
+        this_components = pca_data[1][i_wavelength][:options.n_components]
+        this_data = data[:,:,i_data]
+        noise_est = cp.sqrt(cp.abs(this_components[0]))[0,:]        
+        design_matrix = cp.stack([c[0,:] for c in this_components]).T                                                            
+        res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(this_data.T, design_matrix, sigma=noise_est, return_A_pinv_w=options.include_diagnostics)
+        coeffs = res[0].T
+        residual[:,:,i_data] = (this_data.T-design_matrix@coeffs.T).T
+        weighted_coeffs[:,i_data] = coeffs @ coeff_data[i_wavelength][1][options.n_components-1]
+        
+        #print(coeffs.shape, this_data.shape, residual.shape)
+        
+    output = (weighted_coeffs, residual)
+    return output
 
 def inpaint_vectorized(data):
     """
@@ -144,9 +173,9 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
     new_shape = (n_bins, bin_size) + trimmed.shape[1:]
     return trimmed.reshape(new_shape).mean(axis=1)
 
-pca_data = kgs.dill_load(kgs.temp_dir + '/explore_bad_pixels_pca.pickle')[1]
+#pca_data = kgs.dill_load(kgs.temp_dir + '/explore_bad_pixels_pca.pickle')[1]
 
-@kgs.profile_each_line
+#@kgs.profile_each_line
 def remove_bad_pixels_pca(data, components, n_components, noise_est_threshold, residual_threshold, also_remove_mean):
     # data: (time) x (pixel) x (wavelength)
     # modifies in place
@@ -499,7 +528,7 @@ def default_loaders():
     loaders[0].apply_full_sensor_corrections.inpainting_2d=True
     loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = False
     loaders[0].apply_time_binning.time_binning = 50
-    loaders[0].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[0:1],4,100,5,False]
+    #loaders[0].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[0:1],4,100,5,False]
     
     # AIRS configuration
     loaders[1].apply_pixel_corrections.clip_columns=True
@@ -508,7 +537,7 @@ def default_loaders():
     loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
     loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=False
     loaders[1].apply_time_binning.time_binning = 5
-    loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
+    #loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
     
     return loaders
 

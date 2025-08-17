@@ -55,6 +55,7 @@ match env:
         temp_dir = d_drive+'/ariel2/temp/'             
         code_dir = d_drive+'/ariel2/code/core/' 
         csv_dir = d_drive+'/ariel2/'
+        calibration_dir = d_drive+'/ariel2/calibration/'
         loader_cache_dir = d_drive+'/ariel2/loader_cache/'
     case 'kaggle':
         data_dir = '/kaggle/input/ariel-data-challenge-2025/'
@@ -62,6 +63,7 @@ match env:
         loader_cache_dir = '/temp/loader_cache/'
         code_dir = '/kaggle/input/my-ariel2-library/'         
         csv_dir = '/kaggle/working/'
+        calibration_dir = '/kaggle/input/my-ariel2-calibration'
 os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
@@ -630,6 +632,7 @@ class Model(BaseClass):
                 t.unload_spectrum()
             t.check_constraints()
         test_data_inferred = self._infer(test_data)
+        assert([d.planet_id for d in test_data]==[d.planet_id for d in test_data_inferred])
         for t in test_data_inferred:
             t.check_constraints()
                 
