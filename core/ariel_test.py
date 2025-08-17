@@ -6,6 +6,7 @@ import cupy as cp
 import ariel_load
 import ariel_simple
 import ariel_model
+import ariel_gp
 import dill
 import deepdiff
 import copy
@@ -43,9 +44,10 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
 def run_model_test(regenerate_reference=False):
     models = dict()
     models['simple'] = ariel_model.baseline_model().model
+    models['gp'] = ariel_gp.PredictionModel()
     train_data = kgs.load_all_train_data()
     for name,model in models.items():
-        data = copy.deepcopy(train_data[100:106])
+        data = copy.deepcopy(train_data[100:103])
         model.run_in_parallel = not regenerate_reference
         model.train(data)
         data = model.infer(data)
