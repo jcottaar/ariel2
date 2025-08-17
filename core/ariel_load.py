@@ -48,6 +48,10 @@ def inpaint_along_axis_inplace(arr, axis=0):
     
 pca_data = kgs.dill_load(kgs.calibration_dir + '/explore_bad_pixels_pca.pickle')
 coeff_data = kgs.dill_load(kgs.temp_dir+'/explore_base_shape_from_pca_coeff_list.pickle')
+core_shapes = []
+for i_wavelength in range(283):
+    core_shapes.append((cp.stack([c[0,:] for c in pca_data[1][i_wavelength]]).T @ coeff_data[i_wavelength][2][:,None])[:,0])
+    
 
 @dataclass
 class apply_pca_modelOptions(kgs.BaseClass):
@@ -55,10 +59,16 @@ class apply_pca_modelOptions(kgs.BaseClass):
     
     include_diagnostics: bool = field(init=True, default=False)
 
-def apply_pca_model(data, wavelength_ids, options):
+def apply_pca_model(data, wavelength_ids, options, residual_mode = 0):
+    # 0: no residual
+    # 1: standard residual
+    # 2: remove only main shape
     options.check_constraints()
     
-    residual = copy.deepcopy(data)
+    if residual_mode>0:
+        residual = copy.deepcopy(data)
+    else:
+        residual = None
     weighted_coeffs = cp.empty((data.shape[0], data.shape[2]))
     for i_data, i_wavelength in enumerate(wavelength_ids):
         this_components = pca_data[1][i_wavelength][:options.n_components]
@@ -66,9 +76,12 @@ def apply_pca_model(data, wavelength_ids, options):
         noise_est = cp.sqrt(cp.abs(this_components[0]))[0,:]        
         design_matrix = cp.stack([c[0,:] for c in this_components]).T                                                            
         res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(this_data.T, design_matrix, sigma=noise_est, return_A_pinv_w=options.include_diagnostics)
-        coeffs = res[0].T
-        residual[:,:,i_data] = (this_data.T-design_matrix@coeffs.T).T
+        coeffs = res[0].T        
         weighted_coeffs[:,i_data] = coeffs @ coeff_data[i_wavelength][1][options.n_components-1]
+        if residual_mode == 1:
+            residual[:,:,i_data] = (this_data.T-design_matrix@coeffs.T).T
+        elif residual_mode == 2:
+            residual[:,:,i_data] = this_data - weighted_coeffs[:,i_data][:,None] * core_shapes[i_wavelength]
         
         #print(coeffs.shape, this_data.shape, residual.shape)
         
@@ -287,6 +300,8 @@ class ApplyPixelCorrections(kgs.BaseClass):
     adc_offset_sign = 1 
     dark_current_sign = 1
     
+    poke_holes = False
+    
     #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         calibration_directory = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_calibration_' + str(observation_number) + '/'
@@ -427,6 +442,13 @@ class ApplyPixelCorrections(kgs.BaseClass):
             data.data = data.data[1:-1,...]
             data.times = data.times[1:-1]
             data.time_intervals = data.time_intervals[1:-1]
+            
+        if self.poke_holes:
+            if data.is_FGS:
+                data.data[:,15:16,15:16] = cp.nan
+            else:
+                data.data[:,15,::3] = cp.nan
+                data.data[:,16,1::3] = cp.nan
 
 @dataclass
 class ApplyFullSensorCorrections(kgs.BaseClass):
@@ -439,6 +461,9 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     inpainting_2d = False
     
     #remove_constant = 0.
+    
+    use_pca_for_background_removal = False
+    pca_options: object = field(init=True, default_factory = lambda:apply_pca_modelOptions(n_components=4))
     
     remove_background_based_on_rows = False
     remove_background_n_rows = 8 
@@ -468,8 +493,38 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
         #data.data -= self.remove_constant
         
         #if self.remove_background_based_on_rows:
+        
+        if self.use_pca_for_background_removal:
+            if data.is_FGS:
+                data_pca = cp.reshape(data.data, (-1,1024,1))
+                wavelength_ids = [0]
+            else:
+                data_pca = data.data
+                wavelength_ids = np.arange(1,283)
+            data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
+            data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)    
+            # if data.is_FGS:
+            #     lims = [-1,5]
+            # else:
+            #     lims = [-1,50]
+            # plt.figure()
+            # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
+            # plt.clim(lims)
+            # plt.colorbar()            
+            # plt.figure()
+            # plt.imshow(cp.mean(data_for_background_removal,0).get(), aspect='auto', interpolation='none')
+            # plt.clim(lims)
+            # plt.colorbar()            
+            # plt.figure()
+            # plt.imshow(cp.mean(data_for_background_removal-data.data,0).get(), aspect='auto', interpolation='none')
+            # plt.clim([-1,1])
+            # plt.colorbar()
+            
+        else:
+            data_for_background_removal = data.data
+        
         if not data.is_FGS:
-            background_data = cp.concatenate((data.data[:,:self.remove_background_n_rows,:], data.data[:,-self.remove_background_n_rows:,:]), axis=1)
+            background_data = cp.concatenate((data_for_background_removal[:,:self.remove_background_n_rows,:], data_for_background_removal[:,-self.remove_background_n_rows:,:]), axis=1)
             background_estimate = cp.mean(background_data, axis=(0,1))
             if self.remove_background_remove_used_rows:
                 to_keep = cp.full(data.data.shape[1], False)
@@ -479,9 +534,10 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
                 data.data -= background_estimate[None,None,:]
             
         if self.remove_background_based_on_pixels:
-            mean_per_pixel = cp.mean(data.data, axis=0).flatten()
+            mean_per_pixel = cp.mean(data_for_background_removal, axis=0).flatten()
             #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
-            background_estimate = cp.mean(cp.sort(mean_per_pixel)[:self.remove_background_pixels])
+            inds = cp.argsort(cp.mean(data.data,axis=0).flatten())
+            background_estimate = cp.mean(cp.sort(mean_per_pixel[inds[:self.remove_background_pixels]]))
             #print(background_estimate)
             data.data -= background_estimate
  
@@ -496,7 +552,7 @@ class ApplyTimeBinning(kgs.BaseClass):
         data.time_intervals = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
         
         
-        
+@dataclass        
 class ApplyWavelengthBinning(kgs.BaseClass):
     
     #@kgs.profile_each_line
@@ -512,8 +568,27 @@ class ApplyWavelengthBinning(kgs.BaseClass):
         data.noise_est = cp.empty((data.data.shape[1]))
         for ii in range(data.data.shape[1]):
             data.noise_est[ii] = ariel_numerics.estimate_noise_cp(data.data[:,ii])*np.sqrt(data.time_intervals[0])
-            
+        #data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
+
+@dataclass    
+class ApplyWavelengthBinning2(kgs.BaseClass):
+    
+    options: object = field(init=True, default_factory = apply_pca_modelOptions)
+    
+    #@kgs.profile_each_line
+    def __call__(self, data, planet, observation_number):
+        if data.is_FGS:
+            data.data = cp.reshape(data.data, (-1,1024,1))
+            wavelength_ids = [0]
+        else:
+            wavelength_ids = np.arange(1,283)
+
+        data.data = apply_pca_model(data.data, wavelength_ids, self.options, residual_mode=0)[0]
         
+        # Estimate noise per pixel        
+        data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
+
+
 def default_loaders():
     loader = kgs.TransitLoader()
     loader.load_raw_data = LoadRawData()
