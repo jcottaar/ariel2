@@ -47,7 +47,7 @@ def inpaint_along_axis_inplace(arr, axis=0):
     # No need to move axes back — arr was modified in-place through views
     
 pca_data = kgs.dill_load(kgs.calibration_dir + '/explore_bad_pixels_pca.pickle')
-coeff_data = kgs.dill_load(kgs.temp_dir+'/explore_base_shape_from_pca_coeff_list.pickle')
+coeff_data = kgs.dill_load(kgs.calibration_dir+'/explore_base_shape_from_pca_coeff_list.pickle')
 core_shapes = []
 for i_wavelength in range(283):
     core_shapes.append((cp.stack([c[0,:] for c in pca_data[1][i_wavelength]]).T @ coeff_data[i_wavelength][2][:,None])[:,0])
