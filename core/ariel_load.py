@@ -462,7 +462,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     
     #remove_constant = 0.
     
-    use_pca_for_background_removal = False
+    use_pca_for_background_removal = True
     pca_options: object = field(init=True, default_factory = lambda:apply_pca_modelOptions(n_components=4))
     
     remove_background_based_on_rows = False
@@ -503,10 +503,10 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
                 wavelength_ids = np.arange(1,283)
             data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
             data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)    
-            # if data.is_FGS:
-            #     lims = [-1,5]
-            # else:
-            #     lims = [-1,50]
+            if data.is_FGS:
+                lims = [-1,5]
+            else:
+                lims = [-1,50]
             # plt.figure()
             # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
             # plt.clim(lims)
@@ -522,6 +522,37 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             
         else:
             data_for_background_removal = data.data
+        
+        
+        if data.is_FGS:
+            # plt.figure()
+            # plt.scatter(cp.sqrt(core_shapes[0]).get(), ariel_numerics.estimate_noise_cp(data.data.reshape(-1,1024)).get())
+            # plt.figure()
+            # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
+            #plt.figure()
+            #plt.imshow(core_shapes[0].get().reshape(32,32))
+            #plt.figure()
+            #plt.imshow(cp.log(ariel_numerics.estimate_noise_cp(data.data.reshape(-1,1024))).get().reshape(32,32))
+            pass
+        else:
+            pass
+#             rr = apply_pca_model(cp.mean(data.data,0)[None,...], np.arange(1,283), self.pca_options, residual_mode=0)[0]
+#             print(rr.shape)
+            
+#             noise_est = copy.deepcopy(data.data[0,:,:])
+#             shp = copy.deepcopy(data.data[0,:,:])
+#             for ii in range(282):
+#                 noise_est[:,ii] = ariel_numerics.estimate_noise_cp(data.data[:,:,ii])#/cp.sqrt(rr[0,ii])
+#                 shp[:,ii] = core_shapes[ii+1]*cp.sqrt(rr[0,ii])
+# #              plt.figure()
+#             # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
+#             # plt.figure()
+#             # plt.imshow(shp.get(), aspect='auto', interpolation='none')
+#             plt.figure()
+#             plt.imshow(cp.log(noise_est).get(), aspect='auto', interpolation='none')
+            # plt.figure()
+            # for ii in range(32):
+            #     plt.scatter(cp.sqrt(shp[ii,:]).get(), noise_est[ii,:].get())
         
         if not data.is_FGS:
             background_data = cp.concatenate((data_for_background_removal[:,:self.remove_background_n_rows,:], data_for_background_removal[:,-self.remove_background_n_rows:,:]), axis=1)
@@ -588,7 +619,6 @@ class ApplyWavelengthBinning2(kgs.BaseClass):
         # Estimate noise per pixel        
         data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
 
-
 def default_loaders():
     loader = kgs.TransitLoader()
     loader.load_raw_data = LoadRawData()
@@ -600,9 +630,11 @@ def default_loaders():
     loaders = [loader, copy.deepcopy(loader)]
     
     # FGS configuration   
-    loaders[0].apply_full_sensor_corrections.inpainting_2d=True
-    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = False
+    loaders[0].apply_full_sensor_corrections.inpainting_2d=False
+    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True
     loaders[0].apply_time_binning.time_binning = 50
+    loaders[0].apply_wavelength_binning = ApplyWavelengthBinning2()
+    loaders[0].apply_wavelength_binning.options.n_components = 4
     #loaders[0].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[0:1],4,100,5,False]
     
     # AIRS configuration
@@ -610,7 +642,7 @@ def default_loaders():
     loaders[1].apply_pixel_corrections.clip_columns1=39
     loaders[1].apply_pixel_corrections.clip_columns2=321    
     loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
-    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=False
+    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=True
     loaders[1].apply_time_binning.time_binning = 5
     #loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
     

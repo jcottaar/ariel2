@@ -530,6 +530,7 @@ def load_data(planet_id, is_train):
     files = glob.glob(data.get_directory()+'*')
     assert len(files)%4 == 0
     n_transits = len(files)//4
+    sanity_check(lambda x:x, n_transits, 'n_transits', 1, [1,2])
     for ii in range(n_transits):
         data.transits.append(Transit())
         data.transits[-1].observation_number = ii

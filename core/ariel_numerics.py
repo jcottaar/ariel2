@@ -62,46 +62,83 @@ def estimate_noise(ts, window_size=10, degree=2, combine_method='rms'):
         return float(np.median(rms_corr))
     else:
         raise ValueError("combine_method must be 'rms', 'mean' or 'median'")
+        
+        
 
-def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
+def remove_trend_cp(x, window_size=10, degree=2):
     """
-    CuPy version: same behavior, runs on GPU.
+    Polynomial (Savitzky-Golay–like) detrend along axis 0 on GPU (CuPy).
+    Works for arrays of any dimensionality. Returns residuals with the same
+    shape as the input. Filtering is always applied over axis 0.
+
+    Parameters
+    ----------
+    x : array_like
+        Input data of shape (N, ...). Any dtype convertible to CuPy.
+    window_size : int, default=10
+        Length of the sliding window (must be > degree+1 and <= N).
+    degree : int, default=2
+        Polynomial degree used for local fit.
+
+    Returns
+    -------
+    residuals : cupy.ndarray
+        Same shape as `x`, containing x - local_polynomial_fit at each index
+        along axis 0. Edges are handled via reflection so the length is preserved.
+
+    Notes
+    -----
+    - The filter is *centered*. For even window sizes, the evaluation point is
+      the left of the two center samples (index floor(w/2)).
+    - Computation is batched across all remaining dimensions using a 2D view.
     """
-    ts = cp.asarray(ts)
-    N = ts.size
-    if N < window_size:
-        raise ValueError(f"Time series length ({int(N)}) is shorter than window size ({window_size}).")
+    x = cp.asarray(x)
+    if x.ndim < 1:
+        raise ValueError("`x` must have at least 1 dimension (N, ...).")
 
-    # sliding windows on GPU
-    windows = cp.lib.stride_tricks.sliding_window_view(ts, window_size)  # shape: (N - w + 1, w)
+    N = x.shape[0]
+    w = int(window_size)
+    p = int(degree) + 1
 
-    # Vandermonde and pseudoinverse on GPU
-    x = cp.arange(window_size)
-    V = cp.vander(x, degree + 1)                     # (w, p)
-    pinv = cp.linalg.pinv(V)                          # (p, w)
+    if N < w:
+        raise ValueError(f"Length along axis 0 ({int(N)}) is shorter than window size ({w}).")
+    if w <= p:
+        raise ValueError(f"Window size ({w}) must be > degree+1 ({p}).")
 
-    # fit and residual RMS per window (all on GPU)
-    coeffs = windows.dot(pinv.T)                      # (num_windows, p)
-    fitted = coeffs.dot(V.T)                          # (num_windows, w)
-    residuals = windows - fitted
-    rms = cp.sqrt(cp.mean(residuals**2, axis=1))      # (num_windows,)
+    # Flatten all non-time axes into one batch dimension to vectorize the fit.
+    orig_shape = x.shape
+    C = int(cp.prod(cp.asarray(orig_shape[1:])).item()) if x.ndim > 1 else 1
+    x2 = x.reshape(N, C)
 
-    # bias correction
-    p = degree + 1
-    correction = cp.sqrt(window_size / (window_size - p))
-    rms_corr = rms * correction
+    # Centered padding so we get an output of length N after sliding.
+    # Reflection padding reduces edge bias vs constant/zero padding.
+    pad_left = w // 2
+    pad_right = w - 1 - pad_left
+    xpad = cp.pad(x2, ((pad_left, pad_right), (0, 0)), mode='reflect')
 
-    # combine and return as Python float
-    if combine_method == 'rms':
-        result = cp.sqrt(cp.mean(rms_corr**2))
-    elif combine_method == 'mean':
-        result = cp.mean(rms_corr)
-    elif combine_method == 'median':
-        result = cp.median(rms_corr)
-    else:
-        raise ValueError("combine_method must be 'rms', 'mean' or 'median'")
+    # Build sliding windows along axis 0: (N, C, w)
+    windows = cp.lib.stride_tricks.sliding_window_view(xpad, w, axis=0)  # (N, C, w)
 
-    return result
+    # Vandermonde + pseudoinverse (shared across batches)
+    xw = cp.arange(w, dtype=x.dtype)
+    V = cp.vander(xw, p)              # (w, p) with powers [p-1 ... 0]
+    pinv = cp.linalg.pinv(V)          # (p, w)
+
+    # Evaluate the fitted polynomial at the (left) center position
+    x0 = cp.asarray([w // 2], dtype=x.dtype)
+    v0 = cp.vander(x0, p)[0]          # (p,)
+    # Convolution-like weights to produce the fitted value at center from a window
+    h = v0 @ pinv                     # (w,)
+
+    # Predicted center value for every window and channel: (N, C)
+    yhat_center = cp.tensordot(windows, h, axes=([2], [0]))
+
+    # Residual at each position (length preserved): (N, C)
+    residuals = x2 - yhat_center
+
+    # Reshape back to original
+    return residuals.reshape(orig_shape)
+
 
 def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
     """
