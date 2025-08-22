@@ -88,6 +88,7 @@ def apply_pca_model(data, wavelength_ids, options, residual_mode = 0):
     output = (weighted_coeffs, residual)
     return output
 
+@kgs.profile_each_line
 def inpaint_vectorized(data):
     """
     Inpaints NaN‐patches along the last axis (Y) of `data` (shape C×X×Y)
@@ -187,6 +188,10 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
     return trimmed.reshape(new_shape).mean(axis=1)
 
 #pca_data = kgs.dill_load(kgs.temp_dir + '/explore_bad_pixels_pca.pickle')[1]
+
+AIRS_jitter = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0][:2,:], dtype=cp.float64)
+AIRS_base_scaling = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_base_scaling.pickle'))
+
 
 #@kgs.profile_each_line
 def remove_bad_pixels_pca(data, components, n_components, noise_est_threshold, residual_threshold, also_remove_mean):
@@ -511,10 +516,10 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
             # plt.clim(lims)
             # plt.colorbar()            
-            # plt.figure()
-            # plt.imshow(cp.mean(data_for_background_removal,0).get(), aspect='auto', interpolation='none')
-            # plt.clim(lims)
-            # plt.colorbar()            
+            plt.figure()
+            plt.imshow(cp.mean(data_for_background_removal,0).get(), aspect='auto', interpolation='none')
+            plt.clim(lims)
+            plt.colorbar()            
             # plt.figure()
             # plt.imshow(cp.mean(data_for_background_removal-data.data,0).get(), aspect='auto', interpolation='none')
             # plt.clim([-1,1])

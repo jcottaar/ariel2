@@ -1,5 +1,8 @@
 import numpy as np
 import cupy as cp
+import kaggle_support as kgs
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 def estimate_noise(ts, window_size=10, degree=2, combine_method='rms'):
     """
@@ -342,6 +345,144 @@ def nan_pca(mat, n_components, max_iter=50, tol=1e-6,
     S_post = S_post[order]
 
     return W, C, S_post
+
+import numpy as np
+
+@kgs.profile_each_line
+def nan_pca_rank1_memmap(
+    X_row: np.memmap,      # shape (R, C), order='C'  (fast row batches)
+    X_col: np.memmap,      # shape (R, C), order='F'  (fast column batches)
+    W_pre, C_pre, 
+    max_iter: int = 50,
+    tol: float = 1e-6,
+    row_batch: int = 8192,   # tune to your RAM/SSD
+    col_batch: int = 256,    # tune to your RAM/SSD
+    verbose: bool = False,
+    acc_dtype = np.float64   # accumulator dtype for stable sums
+):
+    """
+    Rank-1 PCA with missing values using ALS, out-of-core.
+
+    Model: X_ij ≈ W_i * C_j, for observed (non-NaN) entries.
+    Updates:
+      C_j = sum_i M_ij * W_i * X_ij / sum_i M_ij * W_i^2
+      W_i = sum_j M_ij * C_j * X_ij / sum_j M_ij * C_j^2
+    where M_ij = 1 if X_ij is observed else 0.
+
+    Requirements:
+      - X_row and X_col have identical shape (R, C), same dtype.
+      - X_row is C-order memmap; X_col is F-order memmap.
+      - Never copies the full array; only small row/column tiles are loaded.
+    Returns:
+      W: (R,) scores
+      C: (1, C) component (row vector)
+      S_post: (1,) strength (||W||_2)
+    """
+    if X_row.shape != X_col.shape:
+        raise ValueError("X_row and X_col must have the same shape.")
+    if X_row.dtype != X_col.dtype:
+        raise ValueError("X_row and X_col must have the same dtype.")
+    R, C = X_row.shape
+    dtype = X_row.dtype
+
+    def _nan_to_num(block):
+        out = block.copy()
+        np.nan_to_num(out, copy=False)
+        return out
+
+    # init C by column means
+    C_vec = np.random.default_rng(seed=42).standard_normal(C, dtype=acc_dtype)
+#     C_cnt = np.zeros(C, dtype=acc_dtype)
+#     for j0 in range(0, C, col_batch):
+#         j1 = min(j0 + col_batch, C)
+#         num = np.zeros(j1 - j0, dtype=acc_dtype)
+#         den = np.zeros(j1 - j0, dtype=acc_dtype)
+#         for i0 in range(0, R, row_batch):
+#             i1 = min(i0 + row_batch, R)
+#             block = X_col[i0:i1, j0:j1]
+#             num  += np.nansum(block, axis=0, dtype=acc_dtype)
+#             den  += (~np.isnan(block)).sum(axis=0, dtype=acc_dtype)
+#         seg = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+#         C_vec[j0:j1] = seg
+#         C_cnt[j0:j1] = den
+
+#     if not np.any(C_cnt > 0):
+#         return np.zeros(R, dtype=dtype), np.zeros((1, C), dtype=dtype), np.array([0], dtype=dtype)
+
+#     empty = C_cnt == 0
+#     if np.any(empty):
+#         rng = np.random.default_rng(42)
+#         C_vec[empty] = rng.standard_normal(empty.sum()).astype(acc_dtype) * 1e-3
+
+    W = np.zeros(R, dtype=acc_dtype)
+#     C2 = (C_vec ** 2)
+#     for i0 in range(0, R, row_batch):
+#         i1 = min(i0 + row_batch, R)
+#         num_i = np.zeros(i1 - i0, dtype=acc_dtype)
+#         den_i = np.zeros(i1 - i0, dtype=acc_dtype)
+#         for j0 in range(0, C, col_batch):
+#             j1 = min(j0 + col_batch, C)
+#             block = X_row[i0:i1, j0:j1]
+#             mask  = ~np.isnan(block)
+#             num_i += _nan_to_num(block) @ C_vec[j0:j1]
+#             den_i += mask @ C2[j0:j1]
+#         W[i0:i1] = np.divide(num_i, den_i, out=np.zeros_like(num_i), where=den_i > 0)
+
+#     cnorm = np.linalg.norm(C_vec)
+#     if cnorm > 0:
+#         C_vec /= cnorm
+#         W *= cnorm
+
+    prev_C = C_vec.copy()
+    for it in range(1, max_iter + 1):
+        plt.figure()
+        plt.imshow(C_vec.reshape(32,282), interpolation='none', aspect='auto')
+        plt.pause(0.001)
+        C2 = (C_vec ** 2)
+        for i0 in tqdm(range(0, R, row_batch)):
+            #print(i0)
+            i1 = min(i0 + row_batch, R)
+            #num_i = np.zeros(i1 - i0, dtype=acc_dtype)
+            #den_i = np.zeros(i1 - i0, dtype=acc_dtype)
+            #for j0 in range(0, C, col_batch):
+            #j1 = min(j0 + col_batch, C)
+            j0 = 0
+            j1 = C
+            block = X_row[i0:i1, j0:j1] - W_pre[i0:i1,:]@C_pre[:, j0:j1]
+            mask  = ~np.isnan(block)
+            num_i = _nan_to_num(block) @ C_vec[j0:j1]
+            den_i = (mask * C2[j0:j1]).sum(axis=1, dtype=acc_dtype)#mask @ C2[j0:j1]
+            W[i0:i1] = np.divide(num_i, den_i, out=np.zeros_like(num_i), where=den_i > 0)
+           # X_row._mmap.madvise(MADV_DONTNEED, start=i0*C*itemsize, length=(i1-i0)*C*itemsize)
+
+        for j0 in tqdm(range(0, C, col_batch)):
+            j1 = min(j0 + col_batch, C)
+            #num = np.zeros(j1 - j0, dtype=acc_dtype)
+            #den = np.zeros(j1 - j0, dtype=acc_dtype)
+            #for i0 in range(0, R, row_batch):
+            i0 = 0
+            i1 = R
+            block = X_col[i0:i1, j0:j1] - W_pre[i0:i1,:]@C_pre[:, j0:j1]
+            num = _nan_to_num(block).T @ W[i0:i1]
+            den = (~np.isnan(block)).T @ (W[i0:i1] ** 2)
+            C_vec[j0:j1] = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+
+        cnorm = np.linalg.norm(C_vec)
+        if cnorm > 0:
+            C_vec /= cnorm
+            W *= cnorm
+
+        rel = np.linalg.norm(C_vec - prev_C) / (np.linalg.norm(prev_C) + 1e-12)
+        if verbose:
+            print(f"iter {it:02d}  ΔC_rel={rel:.3e}")
+        if rel < tol:
+            break
+        prev_C[:] = C_vec
+
+    W_out = W.astype(dtype, copy=False)
+    C_out = C_vec.astype(dtype, copy=False)[None, :]
+    S_post = np.array([np.linalg.norm(W_out)], dtype=dtype)
+    return W_out, C_out, S_post
 
 import cupy as cp
 
