@@ -88,7 +88,7 @@ def apply_pca_model(data, wavelength_ids, options, residual_mode = 0):
     output = (weighted_coeffs, residual)
     return output
 
-@kgs.profile_each_line
+#@kgs.profile_each_line
 def inpaint_vectorized(data):
     """
     Inpaints NaN‐patches along the last axis (Y) of `data` (shape C×X×Y)
@@ -192,57 +192,6 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
 AIRS_jitter = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0][:2,:], dtype=cp.float64)
 AIRS_base_scaling = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_base_scaling.pickle'))
 
-
-#@kgs.profile_each_line
-def remove_bad_pixels_pca(data, components, n_components, noise_est_threshold, residual_threshold, also_remove_mean):
-    # data: (time) x (pixel) x (wavelength)
-    # modifies in place
-    for i_wavelength in range(data.shape[2]):
-        this_data = data[:,:,i_wavelength]        
-        n_removed=0        
-        noise_est = cp.ones(this_data.shape[1])
-        #for ii in range(this_data.shape[1]):
-        #   noise_est[ii] = ariel_numerics.estimate_noise_cp(this_data[:,ii])
-        NN=100
-        for ii in range(this_data.shape[1]//NN+1):            
-            maxind=min((this_data.shape[1], (ii+1)*NN))
-            noise_est[ii*NN:maxind] = ariel_numerics.estimate_noise_cp(this_data[:,ii*NN:maxind])
-       # noise_est[cp.isnan(noise_est)]=cp.nanmean(noise_est)
-        noise_est[noise_est<10] = 10
-        data_mean = cp.mean(this_data,0)
-        noise_est_threshold_cp = cp.array(noise_est_threshold)
-        n_nan = cp.sum(cp.isnan(this_data))
-        this_data[:,(data_mean<0) | (noise_est>noise_est_threshold*cp.sqrt(data_mean))] = cp.nan
-        if cp.sum(cp.isnan(this_data))!=n_nan:
-            print('removing noise_est')
-        # for ii in range(this_data.shape[1]):
-        #    if (data_mean[ii]<0 or noise_est[ii]>noise_est_threshold*cp.sqrt(data_mean[ii])):
-        # #       #print(i_wavelength, 'noise_est', noise_est[ii]/cp.sqrt(data_mean[ii]))
-        #        this_data[:,ii] = cp.nan
-        #        #noise_est[ii] = cp.nan
-        while True:            
-            #this_data[:,15*32+15]=0
-            #print(this_data.shape)
-            data_mean = cp.mean(this_data,0)
-            #print(data_mean.shape)
-            design_matrix = cp.stack([cp.ones(data_mean.shape[0])]+[c[0,:] for c in components[i_wavelength][0:n_components]]).T#[
-            #design_matrix[:,1:] = design_matrix[:,1:]-cp.mean(design_matrix[:,1:],1)
-            #print(design_matrix.shape)            
-            coeffs = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(data_mean[:,None], design_matrix, sigma=noise_est, return_A_pinv_w=False)
-            residual = (data_mean[:,None]-design_matrix@coeffs[0])[:,0]
-            residual_scaled = residual/noise_est*cp.sqrt(this_data.shape[0])
-            residual_scaled[cp.isnan(residual_scaled)] = 0
-            if cp.any(cp.abs(residual_scaled)>residual_threshold):
-                print('removing residual')
-                #print(i_wavelength, cp.max(cp.abs(residual_scaled)))
-                this_data[:,cp.argmax(cp.abs(residual_scaled))] = cp.nan
-                #noise_est[cp.argmax(cp.abs(residual_scaled))] = cp.nan
-                n_removed+=1
-            else:
-                break
-        if also_remove_mean:
-            #print('coeffs0', coeffs[0][0][0])
-            this_data[...] -= coeffs[0][0][0]
 
 @dataclass
 class LoadRawData(kgs.BaseClass):   
@@ -457,10 +406,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
 @dataclass
 class ApplyFullSensorCorrections(kgs.BaseClass):
-    
-    remove_bad_pixels_pca = False
-    remove_bad_pixels_pca_inputs = None
-    
+        
     inpainting_time = True
     inpainting_wavelength = False
     inpainting_2d = False
@@ -478,13 +424,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     remove_background_pixels = 100
     
     #@kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):
-        if self.remove_bad_pixels_pca:
-            if data.is_FGS:                
-                dat = cp.reshape(data.data, (-1,1024))[:,:,None]
-                remove_bad_pixels_pca(dat, *self.remove_bad_pixels_pca_inputs)
-            else:
-                remove_bad_pixels_pca(data.data, *self.remove_bad_pixels_pca_inputs)
+    def __call__(self, data, planet, observation_number):        
         assert self.inpainting_time # actually done above
         #if self.inpainting_time:
         #    inpaint_along_axis_inplace(data.data,0)
@@ -516,10 +456,10 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
             # plt.clim(lims)
             # plt.colorbar()            
-            plt.figure()
-            plt.imshow(cp.mean(data_for_background_removal,0).get(), aspect='auto', interpolation='none')
-            plt.clim(lims)
-            plt.colorbar()            
+            # plt.figure()
+            # plt.imshow(cp.mean(data_for_background_removal,0).get(), aspect='auto', interpolation='none')
+            # plt.clim(lims)
+            # plt.colorbar()            
             # plt.figure()
             # plt.imshow(cp.mean(data_for_background_removal-data.data,0).get(), aspect='auto', interpolation='none')
             # plt.clim([-1,1])
@@ -623,6 +563,137 @@ class ApplyWavelengthBinning2(kgs.BaseClass):
         
         # Estimate noise per pixel        
         data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
+        
+AIRS_C0 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C0_2.pickle')
+AIRS_C = kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0]
+AIRS_design_matrix = cp.concatenate([AIRS_C0.reshape(1,32,282), cp.array(AIRS_C[:2,:]).reshape(2,32,282)])
+AIRS_design_matrix_np = AIRS_design_matrix.get()
+AIRS_rr = [cp.array(c) for c in kgs.dill_load(kgs.calibration_dir + 'AIRS_rr.pickle')]
+del AIRS_C0; del AIRS_C;
+class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
+    make_diagnostic_plots = False
+    residual_threshold = np.inf
+    #alpha=-0.5
+    
+    # Diagnostics
+    #residual = None
+    
+    @kgs.profile_each_line
+    def __call__(self, data, planet, observation_number):
+        assert not data.is_FGS
+        
+        dataa = data.data
+        
+        result = cp.empty((dataa.shape[0], dataa.shape[2]))
+        residual = cp.empty_like(dataa)
+        residual_expected = cp.zeros((32,282))
+        mean_vals = cp.zeros(282)
+        
+        for i_wavelength in range(282):
+        
+            isnan = cp.isnan(dataa[0,:,i_wavelength]).get()
+            
+            # Determine noise
+            rhs = ariel_numerics.estimate_noise_cov_cp(dataa[:,:,i_wavelength]).get()
+            rhs[isnan,:] = 0
+            rhs[:,isnan] = 0        
+            rhs=rhs.flatten()
+            
+            if self.make_diagnostic_plots and i_wavelength==0:
+                plt.figure()
+                plt.imshow(rhs.reshape(32,32))
+                plt.title('Raw covariance')
+                plt.colorbar()
+
+           # plt.figure()
+           # plt.imshow(rhs.reshape(32,32).get())
+            
+            design_matrix = np.zeros((32*32, 3+32))
+            for ii in range(3):
+                x = AIRS_design_matrix_np[ii,:,[i_wavelength]]
+                x[:,isnan]=0
+                x1 = (x.T@x).flatten()
+                design_matrix[:,ii] = x1
+
+            for ii in range(32):
+                design_matrix[33*ii,ii+3]=1
+                
+            coeffs = np.linalg.lstsq(design_matrix, rhs, rcond=None)[0]    
+            if self.make_diagnostic_plots and i_wavelength==0:
+                residual_cov = rhs - design_matrix@coeffs        
+                plt.figure()
+                plt.imshow(residual_cov.reshape(32,32))
+                plt.title('Covariance residual')
+                plt.colorbar()
+            coeffs[3:][isnan] = 0
+            if not np.all(coeffs[3:][~isnan]>0):
+                raise kgs.ArielException(6,'Bad noise')
+            noise_est = np.sqrt(coeffs[3:])          
+            noise_est = cp.array(noise_est)
+            
+            mean_handled = False
+            isnan = cp.isnan(dataa[0,:,i_wavelength])
+            while True:
+
+                design_matrix = AIRS_design_matrix[:,:,i_wavelength]
+                if not mean_handled:
+                    design_matrix = cp.concatenate([design_matrix, cp.ones((1,32))])                      
+
+                N = design_matrix.shape[0]
+
+                res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
+                coeffs = res[0]
+                residual[:,:,i_wavelength] = (dataa[:,:,i_wavelength].T - design_matrix.T@coeffs).T    
+                
+                A_pinv_w = res[1]
+                A_pinv_w_full = cp.zeros((N,32))
+                A_pinv_w_full[:,~cp.isnan(dataa[0,:,i_wavelength])] = A_pinv_w                
+                mat = design_matrix.T@A_pinv_w_full
+                cov_expected = cp.diag(noise_est**2) - mat@cp.diag(noise_est**2)@mat.T
+                residual_expected[:,i_wavelength] = cp.sqrt(cp.diag(cov_expected))
+
+                residual_expected_ratio = cp.mean(residual[:,:,i_wavelength],0)/residual_expected[:,i_wavelength]*np.sqrt(dataa.shape[0])
+                residual_expected_ratio[cp.isnan(residual_expected_ratio)] = 0
+                
+                if cp.any(cp.abs(residual_expected_ratio)>self.residual_threshold):
+                    #print(i_wavelength, cp.max(cp.abs(residual_expected_ratio)), cp.argmax(cp.abs(residual_expected_ratio)), mean_handled)
+                    dataa[:,cp.argmax(cp.abs(residual_expected_ratio)),i_wavelength] = cp.nan
+                else:
+                    #mean_handled = True
+                    if not mean_handled:
+                        #print(coeffs[3,:].shape)
+                        dataa[:,:,i_wavelength]-=np.mean(coeffs[3,:])    
+                        mean_vals[i_wavelength] = np.mean(coeffs[3,:])    
+                        mean_handled = True
+                    else:
+                        #result[:,i_wavelength] = self.alpha*np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)+(1-self.alpha)*coeffs[0,:]
+                        reconstructed_signal = (design_matrix.T@coeffs).T
+                        result[:,i_wavelength] = cp.sum(reconstructed_signal,1)
+                        break
+                        # if self.use_rr:
+                        #     result[:,i_wavelength] = np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
+                        # else:
+                        #     result[:,i_wavelength] = coeffs[0,:]
+                        # break
+                        
+                        
+        if self.make_diagnostic_plots:
+            plt.figure()
+            plt.imshow(residual_expected.get(), interpolation='none', aspect='auto')
+            plt.colorbar()
+            plt.figure()
+            plt.imshow((cp.mean(residual,0)/residual_expected*np.sqrt(dataa.shape[0]))[:,:].get(), interpolation='none', aspect='auto')
+            plt.clim([-30,30])
+            plt.colorbar()            
+            plt.figure()
+            plt.plot(mean_vals.get())
+        data.data = result
+        data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
+        
+       # self.residual = residual
+
+        
+    
 
 def default_loaders():
     loader = kgs.TransitLoader()
@@ -640,7 +711,6 @@ def default_loaders():
     loaders[0].apply_time_binning.time_binning = 50
     loaders[0].apply_wavelength_binning = ApplyWavelengthBinning2()
     loaders[0].apply_wavelength_binning.options.n_components = 4
-    #loaders[0].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[0:1],4,100,5,False]
     
     # AIRS configuration
     loaders[1].apply_pixel_corrections.clip_columns=True
@@ -649,8 +719,7 @@ def default_loaders():
     loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
     loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=True
     loaders[1].apply_time_binning.time_binning = 5
-    #loaders[1].apply_full_sensor_corrections.remove_bad_pixels_pca_inputs = [pca_data[1:],3,100,5,False]
-    
+     
     return loaders
 
 

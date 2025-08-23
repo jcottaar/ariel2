@@ -1058,6 +1058,9 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     obs_noise = copy.deepcopy(obs)
     obs_noise.labels = obs.labels - obs_signal_sample.labels    
     
+    plt.pause(0.001)
+    return
+    
     #AIRS noise
     _,ax = plt.subplots(2,2,figsize=(18,18))
     noise_mat = obs_noise.export_matrix(True)
