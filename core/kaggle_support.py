@@ -63,7 +63,7 @@ match env:
         loader_cache_dir = '/temp/loader_cache/'
         code_dir = '/kaggle/input/my-ariel2-library/'         
         csv_dir = '/kaggle/working/'
-        calibration_dir = '/kaggle/input/my-ariel2-calibration'
+        calibration_dir = '/kaggle/input/my-ariel2-calibration/'
 os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
@@ -311,6 +311,15 @@ def sanity_check(f,to_check,name,code,limit):
 def print_sanity_checks():
     for m in list(sanity_checks.keys()):
         print(m, sanity_checks[m].seen, sanity_checks[m].limit, sanity_checks[m].code)
+        
+def plot_sanity_checks():
+    for k,v in sanity_checks.items():
+        plt.figure()
+        plt.grid(True)
+        plt.plot(v.seen_all)
+        plt.axline((0,v.limit[0]), slope=0,color='red')
+        plt.axline((0,v.limit[1]), slope=0,color='red')
+        plt.title(k)
 
 '''
 Data definition and loading

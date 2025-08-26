@@ -56,6 +56,7 @@ for i_wavelength in range(283):
 @dataclass
 class apply_pca_modelOptions(kgs.BaseClass):
     n_components: int = field(init=True, default=0)
+    use_sum: bool = field(init=True, default=False)
     
     include_diagnostics: bool = field(init=True, default=False)
 
@@ -76,8 +77,11 @@ def apply_pca_model(data, wavelength_ids, options, residual_mode = 0):
         noise_est = cp.sqrt(cp.abs(this_components[0]))[0,:]        
         design_matrix = cp.stack([c[0,:] for c in this_components]).T                                                            
         res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(this_data.T, design_matrix, sigma=noise_est, return_A_pinv_w=options.include_diagnostics)
-        coeffs = res[0].T        
-        weighted_coeffs[:,i_data] = coeffs @ coeff_data[i_wavelength][1][options.n_components-1]
+        coeffs = res[0].T      
+        if not options.use_sum:
+            weighted_coeffs[:,i_data] = coeffs @ coeff_data[i_wavelength][1][options.n_components-1]
+        else:
+            weighted_coeffs[:,i_data] = cp.sum((design_matrix@coeffs.T).T,1)
         if residual_mode == 1:
             residual[:,:,i_data] = (this_data.T-design_matrix@coeffs.T).T
         elif residual_mode == 2:
@@ -303,6 +307,11 @@ class ApplyPixelCorrections(kgs.BaseClass):
 
         def clean_dark(signal, dark, dt):    
             signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
+            # dark_plot = copy.deepcopy(dark)
+            # dark_plot[cp.isnan(signal[0,...])] = cp.nan
+            # plt.figure()
+            # plt.imshow(dark_plot.get(), aspect='auto', interpolation='none')
+            # plt.colorbar()
             if self.mask_dead:
                 if self.mask_hot:
                     kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.01, 0.01]) 
@@ -514,8 +523,9 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
             inds = cp.argsort(cp.mean(data.data,axis=0).flatten())
             background_estimate = cp.mean(cp.sort(mean_per_pixel[inds[:self.remove_background_pixels]]))
-            #print(background_estimate)
+           # print(background_estimate)
             data.data -= background_estimate
+            
  
 @dataclass
 class ApplyTimeBinning(kgs.BaseClass):
@@ -568,11 +578,15 @@ AIRS_C0 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C0_2.pickle')
 AIRS_C = kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0]
 AIRS_design_matrix = cp.concatenate([AIRS_C0.reshape(1,32,282), cp.array(AIRS_C[:2,:]).reshape(2,32,282)])
 AIRS_design_matrix_np = AIRS_design_matrix.get()
-AIRS_rr = [cp.array(c) for c in kgs.dill_load(kgs.calibration_dir + 'AIRS_rr.pickle')]
+AIRS_rr = [cp.array(c) for c in kgs.dill_load(kgs.calibration_dir + 'AIRS_rr2.pickle')]
 del AIRS_C0; del AIRS_C;
 class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
     make_diagnostic_plots = False
     residual_threshold = np.inf
+    combine_rr2 = False
+    cutoff_sum=0
+    use_noise_est_naive = False
+    sequential_fit = False
     #alpha=-0.5
     
     # Diagnostics
@@ -588,6 +602,10 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
         residual = cp.empty_like(dataa)
         residual_expected = cp.zeros((32,282))
         mean_vals = cp.zeros(282)
+        noise_est_full = cp.zeros((32,282))
+        noise_est_naive = cp.zeros((32,282))
+        
+        planet.diagnostics['AIRS_fallback'] = False
         
         for i_wavelength in range(282):
         
@@ -619,17 +637,34 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                 design_matrix[33*ii,ii+3]=1
                 
             coeffs = np.linalg.lstsq(design_matrix, rhs, rcond=None)[0]    
-            if self.make_diagnostic_plots and i_wavelength==0:
-                residual_cov = rhs - design_matrix@coeffs        
+            residual_cov = rhs - design_matrix@coeffs        
+            if self.make_diagnostic_plots and i_wavelength==0:                
                 plt.figure()
                 plt.imshow(residual_cov.reshape(32,32))
                 plt.title('Covariance residual')
                 plt.colorbar()
+            noise_est_naive[:,i_wavelength] = 8+0.4*cp.sqrt(cp.abs(cp.mean(dataa[:,:,i_wavelength],0)))
             coeffs[3:][isnan] = 0
-            if not np.all(coeffs[3:][~isnan]>0):
-                raise kgs.ArielException(6,'Bad noise')
-            noise_est = np.sqrt(coeffs[3:])          
-            noise_est = cp.array(noise_est)
+            if np.all(coeffs[3:][~isnan]>6):
+                noise_est = np.sqrt(coeffs[3:])          
+                noise_est = cp.array(noise_est)                
+            else:
+                # fallback
+                print('AIRS fallback')
+                noise_est = noise_est_naive[:,i_wavelength]
+                planet.diagnostics['AIRS_fallback'] = True
+            
+            noise_est_full[:,i_wavelength] = noise_est
+            
+            #noise_est_naive[:,i_wavelength][noise_est_naive[:,i_wavelength]<8] = 8
+            
+            residual_cov_ratio = residual_cov/cp.max(rhs)
+            kgs.sanity_check(np.min, noise_est[~isnan], 'noise_est_min', 8, [6,12])
+            kgs.sanity_check(kgs.rms, residual_cov_ratio, 'residual_cov_rms', 1, [0,0.02])
+            kgs.sanity_check(lambda x:np.max(np.abs(x)), residual_cov_ratio, 'residual_cov_max', 2, [0,0.2])
+            
+            if self.use_noise_est_naive:
+                noise_est = noise_est_naive[:,i_wavelength]
             
             mean_handled = False
             isnan = cp.isnan(dataa[0,:,i_wavelength])
@@ -641,34 +676,49 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
 
                 N = design_matrix.shape[0]
 
-                res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
-                coeffs = res[0]
-                residual[:,:,i_wavelength] = (dataa[:,:,i_wavelength].T - design_matrix.T@coeffs).T    
+                if self.sequential_fit and mean_handled:
+                    res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix[1:,:].T, return_A_pinv_w=True, sigma=noise_est)
+                    coeffs = res[0]
+                    intermediate_residual = (dataa[:,:,i_wavelength].T - design_matrix[1:,:].T@coeffs).T    
+                    res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(intermediate_residual.T, design_matrix[:1,:].T, return_A_pinv_w=True, sigma=noise_est)
+                    coeffs = res[0]
+                    residual[:,:,i_wavelength] = (intermediate_residual.T - design_matrix[:1,:].T@coeffs).T                       
+                else:
+                    res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
+                    coeffs = res[0]
+                    residual[:,:,i_wavelength] = (dataa[:,:,i_wavelength].T - design_matrix.T@coeffs).T    
                 
-                A_pinv_w = res[1]
-                A_pinv_w_full = cp.zeros((N,32))
-                A_pinv_w_full[:,~cp.isnan(dataa[0,:,i_wavelength])] = A_pinv_w                
-                mat = design_matrix.T@A_pinv_w_full
-                cov_expected = cp.diag(noise_est**2) - mat@cp.diag(noise_est**2)@mat.T
-                residual_expected[:,i_wavelength] = cp.sqrt(cp.diag(cov_expected))
+                    A_pinv_w = res[1]
+                    A_pinv_w_full = cp.zeros((N,32))
+                    A_pinv_w_full[:,~cp.isnan(dataa[0,:,i_wavelength])] = A_pinv_w                
+                    mat = design_matrix.T@A_pinv_w_full
+                    cov_expected = cp.diag(noise_est**2) - mat@cp.diag(noise_est**2)@mat.T
+                    residual_expected[:,i_wavelength] = cp.sqrt(cp.diag(cov_expected))
 
-                residual_expected_ratio = cp.mean(residual[:,:,i_wavelength],0)/residual_expected[:,i_wavelength]*np.sqrt(dataa.shape[0])
-                residual_expected_ratio[cp.isnan(residual_expected_ratio)] = 0
+                    residual_expected_ratio = cp.mean(residual[:,:,i_wavelength],0)/residual_expected[:,i_wavelength]*np.sqrt(dataa.shape[0])
+                    residual_expected_ratio[cp.isnan(residual_expected_ratio)] = 0
                 
-                if cp.any(cp.abs(residual_expected_ratio)>self.residual_threshold):
+                if not (self.sequential_fit and mean_handled) and cp.any(cp.abs(residual_expected_ratio)>self.residual_threshold):
                     #print(i_wavelength, cp.max(cp.abs(residual_expected_ratio)), cp.argmax(cp.abs(residual_expected_ratio)), mean_handled)
                     dataa[:,cp.argmax(cp.abs(residual_expected_ratio)),i_wavelength] = cp.nan
                 else:
                     #mean_handled = True
                     if not mean_handled:
                         #print(coeffs[3,:].shape)
-                        dataa[:,:,i_wavelength]-=np.mean(coeffs[3,:])    
-                        mean_vals[i_wavelength] = np.mean(coeffs[3,:])    
+                        dataa[:,:,i_wavelength]-=cp.mean(coeffs[3,:])    
+                        mean_vals[i_wavelength] = cp.mean(coeffs[3,:])    
                         mean_handled = True
                     else:
                         #result[:,i_wavelength] = self.alpha*np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)+(1-self.alpha)*coeffs[0,:]
-                        reconstructed_signal = (design_matrix.T@coeffs).T
-                        result[:,i_wavelength] = cp.sum(reconstructed_signal,1)
+                        if self.sequential_fit:
+                            result[:,i_wavelength] = coeffs[0,:]
+                        elif self.combine_rr2:
+                            result[:,i_wavelength] = cp.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
+                        else:
+                            reconstructed_signal = (design_matrix.T@coeffs).T
+                            result[:,i_wavelength] = cp.sum(reconstructed_signal[:,self.cutoff_sum:32-self.cutoff_sum],1)
+                        #result[:,i_wavelength] = coeffs[0,:]
+                        #result[:,i_wavelength] = np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
                         break
                         # if self.use_rr:
                         #     result[:,i_wavelength] = np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
@@ -676,23 +726,43 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                         #     result[:,i_wavelength] = coeffs[0,:]
                         # break
                         
+        #kgs.sanity_check(np.nanmin, noise_est_full/noise_est_naive, 'noise_est_ratio', 3, [0.4,0.9])
+        kgs.sanity_check(np.nanmax, 1-cp.std(residual,0)/residual_expected, 'residual_std_ratio', 4, [0.03,0.15])
+        kgs.sanity_check(lambda x:np.nanmax(np.abs(x)), cp.mean(residual,0)/residual_expected, 'residual_mean_ratio', 5, [0,5])
                         
         if self.make_diagnostic_plots:
             plt.figure()
             plt.imshow(residual_expected.get(), interpolation='none', aspect='auto')
             plt.colorbar()
+            plt.title('Residual expected')
             plt.figure()
-            plt.imshow((cp.mean(residual,0)/residual_expected*np.sqrt(dataa.shape[0]))[:,:].get(), interpolation='none', aspect='auto')
-            plt.clim([-30,30])
-            plt.colorbar()            
+            plt.imshow((cp.std(residual,0)/residual_expected).get(), interpolation='none', aspect='auto')
+            plt.colorbar()
+            plt.title('Residual STD scaled')
             plt.figure()
-            plt.plot(mean_vals.get())
+            #plt.imshow((cp.mean(residual,0)/residual_expected*np.sqrt(dataa.shape[0]))[:,:].get(), interpolation='none', aspect='auto')
+            plt.imshow((cp.mean(residual,0)/residual_expected)[:,:].get(), interpolation='none', aspect='auto')
+            #plt.clim([-30,30])
+            plt.colorbar()          
+            plt.title('Residual mean scaled')
+            # plt.figure()
+            # plt.plot(mean_vals.get())
+            plt.figure()
+            plt.imshow(cp.log(noise_est_full).get(), interpolation='none', aspect='auto')
+            plt.colorbar()
+            plt.title('Noise est')
+            for ii in range(1):
+                plt.figure()
+                for jj in range(282):
+                    i_wavelength = 10*ii+jj
+                    plt.scatter(noise_est_full[:,i_wavelength].flatten().get(), noise_est_naive[:,i_wavelength].flatten().get())
+                plt.axline((0,0), slope=1, color='black')
         data.data = result
         data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
         
        # self.residual = residual
 
-        
+
     
 
 def default_loaders():
@@ -757,6 +827,8 @@ def raw_data_diagnostics(data, observation_number, loaders):
     
     transit.load_to_step(4, data, loaders)
     plots_on_full_signal()
+    
+    transit.load_to_step(5, data, loaders)
     
     transit.load_to_step(0, data, loaders)
     

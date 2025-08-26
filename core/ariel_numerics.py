@@ -435,9 +435,9 @@ def nan_pca_rank1_memmap(
 
     prev_C = C_vec.copy()
     for it in range(1, max_iter + 1):
-        plt.figure()
-        plt.imshow(C_vec.reshape(32,282), interpolation='none', aspect='auto')
-        plt.pause(0.001)
+        # plt.figure()
+        # plt.imshow(C_vec.reshape(32,32), interpolation='none', aspect='auto')
+        # plt.pause(0.001)
         C2 = (C_vec ** 2)
         for i0 in tqdm(range(0, R, row_batch)):
             #print(i0)
