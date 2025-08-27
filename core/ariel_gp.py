@@ -19,6 +19,7 @@ import copy
 import gp # my own GP library
 import ariel_simple
 import ariel_transit
+import ariel_numerics
 
 
 '''
@@ -37,6 +38,7 @@ class ModelOptions(kgs.BaseClass):
  
     # Configuration of the drift prior
     hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
+    FGS_order = -1 # -1 for GP
     
     include_background = False
 
@@ -108,12 +110,25 @@ def define_prior(obs, model_options, data):
     ## FGS drift: average only, otherwise similar to above
     # Define average FGS drift - 1D Gaussian Processs over time
     m = dict()
-    drift_hyper = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_fgs.pickle')
-    m['average'] = gp.SquaredExponentialKernelMulti()
-    m['average'].features = ['time']
-    m['average'].lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_fgs_old.pickle')['average_lengths']
-    m['average'].sigmas = drift_hyper['average_sigmas']
-    m['average'].require_mean_of_non_noise_zero = True
+    if model_options.FGS_order==-1:
+        drift_hyper = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_fgs.pickle')
+        m['average'] = gp.SquaredExponentialKernelMulti()
+        m['average'].features = ['time']
+        m['average'].lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_fgs_old.pickle')['average_lengths']
+        m['average'].sigmas = drift_hyper['average_sigmas']
+        m['average'].require_mean_of_non_noise_zero = True
+    else:
+        m['average'] = gp.FixedBasis()
+        m['average'].features = ['time']
+        m['average'].regularization_variance = np.array([1e4]*model_options.FGS_order)
+        t = obs.df['time'].to_numpy()
+        t = t[~obs.df['is_AIRS']]
+        times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
+        m['average'].basis_functions = np.zeros((len(times_norm), model_options.FGS_order))
+        for i_order in range(model_options.FGS_order):
+            poly_vals = np.zeros(model_options.FGS_order+1)
+            poly_vals[i_order+1] = 1
+            m['average'].basis_functions[:,i_order] = np.polynomial.chebyshev.chebval(times_norm, poly_vals)
     # Combine; not really needed since it's just 1 model, but we do it for consistency with AIRS model
     drift_model_FGS = gp.ParameterScaler()
     drift_model_FGS.scaler = 1e-3
@@ -1093,13 +1108,21 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
         cbu.append(vmax)
         if column == 1:
             plt.clim(cbl[1], cbu[1])
-            
-    plt.figure()
-    plt.plot(obs_FGS.df['time'], obs_noise.export_matrix(False))
-    plt.plot(obs_FGS.df['time'], obs_noise_prior_sample.export_matrix(False))
+     
+    _,ax = plt.subplots(1,2,figsize=(12,6))
+    plt.sca(ax[0])
+    y1= obs_noise_prior_sample.export_matrix(False)
+    y2= obs_noise.export_matrix(False)
+    plt.plot(obs_FGS.df['time'], y1)
+    plt.plot(obs_FGS.df['time'], y2)    
     plt.xlabel('Time [h]')
     plt.ylabel('FGS noise')
-    plt.legend(['Posterior', 'Prior'])
+    plt.legend(['Prior', 'Posterior'])
+    plt.sca(ax[1])
+    y1 -= ariel_numerics.remove_trend_cp(cp.array(y1), window_size=300, degree=4).get()
+    y2 -= ariel_numerics.remove_trend_cp(cp.array(y2), window_size=300, degree=4).get()
+    plt.plot(obs_FGS.df['time'], y1)
+    plt.plot(obs_FGS.df['time'], y2)    
     plt.grid(True)
 
     _,ax = plt.subplots(1,2,figsize=(12,6))
@@ -1117,11 +1140,11 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     plt.grid(True)
 
     plt.sca(ax[1])
-    wl_unique, result1 = apply_func_by_wavelength(np.std, obs_noise)
+    wl_unique, result1 = apply_func_by_wavelength(np.std, obs_noise_prior_sample)
     plt.plot(wl_unique, result1)
-    wl_unique, result2 = apply_func_by_wavelength(np.std, obs_noise_prior_sample)
+    wl_unique, result2 = apply_func_by_wavelength(np.std, obs_noise)
     plt.plot(wl_unique, result2)
-    plt.legend(['Posterior', 'Prior'])
+    plt.legend(['Prior', 'Posterior'])
     plt.xlabel('Wavelength [um]')
     plt.ylabel('STD of noise term')
     plt.grid(True)

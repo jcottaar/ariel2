@@ -9,6 +9,9 @@ import pyarrow.parquet
 from astropy.stats import sigma_clip
 import matplotlib.pyplot as plt
 import ariel_numerics
+import ariel_load_FGS
+
+diagnostic_plots = False
 
 #@kgs.profile_each_line
 def read_parquet_to_numpy(filename):
@@ -419,6 +422,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     inpainting_time = True
     inpainting_wavelength = False
     inpainting_2d = False
+    restore_invalids = False # after mean removal
     
     #remove_constant = 0.
     
@@ -435,6 +439,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):        
         assert self.inpainting_time # actually done above
+        was_invalid = cp.isnan(data.data[0,...])
         #if self.inpainting_time:
         #    inpaint_along_axis_inplace(data.data,0)
         if self.inpainting_wavelength:
@@ -457,10 +462,10 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
                 wavelength_ids = np.arange(1,283)
             data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
             data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)    
-            if data.is_FGS:
-                lims = [-1,5]
-            else:
-                lims = [-1,50]
+            # if data.is_FGS:
+            #     lims = [-1,5]
+            # else:
+            #     lims = [-1,50]
             # plt.figure()
             # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
             # plt.clim(lims)
@@ -522,9 +527,13 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             mean_per_pixel = cp.mean(data_for_background_removal, axis=0).flatten()
             #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
             inds = cp.argsort(cp.mean(data.data,axis=0).flatten())
-            background_estimate = cp.mean(cp.sort(mean_per_pixel[inds[:self.remove_background_pixels]]))
-           # print(background_estimate)
+            background_estimate = cp.mean(mean_per_pixel[inds[:self.remove_background_pixels]])
+            if diagnostic_plots:
+                print(background_estimate)
             data.data -= background_estimate
+            
+        if self.restore_invalids:
+            data.data[:,was_invalid] = cp.nan
             
  
 @dataclass
@@ -795,6 +804,10 @@ def default_loaders():
 
 def raw_data_diagnostics(data, observation_number, loaders):
     
+    global diagnostic_plots
+    diagnostic_plots = True
+    ariel_load_FGS.diagnostic_plots = True
+    
     transit = data.transits[observation_number]
     
     transit.load_to_step(0, data, loaders)
@@ -831,6 +844,9 @@ def raw_data_diagnostics(data, observation_number, loaders):
     transit.load_to_step(5, data, loaders)
     
     transit.load_to_step(0, data, loaders)
+    
+    diagnostic_plots = False
+    ariel_load_FGS.diagnostic_plots = False
     
    
         

@@ -11,6 +11,12 @@ import matplotlib.pyplot as plt
 import ariel_numerics
 import cupyx.scipy.sparse
 
+import warnings
+from scipy.sparse import SparseEfficiencyWarning  # works for cupyx too
+warnings.simplefilter("ignore", SparseEfficiencyWarning)
+
+diagnostic_plots = False
+
 C0_combined = kgs.dill_load(kgs.calibration_dir + 'FGS_C0_2.pickle')
 (cov,C_combined,Psi,Sigma_model) = kgs.dill_load(kgs.calibration_dir + 'FGS_jitter.pickle')
 C_combined = C_combined.T
@@ -28,16 +34,19 @@ FGS_weights = cp.array(kgs.dill_load(kgs.calibration_dir + '/FGS_weights.pickle'
 
 class ApplyWavelengthBinningFGS2(kgs.BaseClass):
     
+    n_mean_pixels = 100
+    
     def __call__(self, data, planet, observation_number):
-        coeffs = get_coeffs(data.data)[0]
+        coeffs = get_coeffs(data.data, n_mean_pixels=self.n_mean_pixels)[0]
         res = cp.sum(FGS_weights*coeffs,0).reshape(-1,1)
-        #plt.figure()
-        #plt.plot(coeffs[3,:].get())
-        #plt.pause(0.001)
+        if diagnostic_plots:
+            plt.figure()
+            plt.plot(coeffs[3,:].get())
+            plt.pause(0.001)
         data.data = res
         data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
 
-def get_coeffs(data):
+def get_coeffs(data, n_mean_pixels=-1):
     
     data = data.reshape(-1,1024)
         
@@ -150,13 +159,19 @@ def get_coeffs(data):
 
       
 
-    mean_handled = False
+    if n_mean_pixels!=0:
+        mean_handled = False
+    else:
+        mean_handled = True
     while True:
 
         if mean_handled:
             design_matrix = design_matrix_combined            
         else:
-            design_matrix = cp.concatenate((design_matrix_combined, cp.ones((1,1024))))
+            if n_mean_pixels==-1:
+                design_matrix = cp.concatenate((design_matrix_combined, cp.ones((1,1024))))
+            else:
+                design_matrix = design_matrix_combined[:1,:]
 
         N = design_matrix.shape[0]
 
@@ -236,15 +251,39 @@ def get_coeffs(data):
             #mean_handled = True
             if not mean_handled:
                 #print(coeffs[3,:].shape)
-                data-=np.mean(coeffs[-1,:])    
-                #print(np.mean(coeffs[-1,:])  )  
+                if n_mean_pixels==-1:
+                    mean_estimate = np.mean(coeffs[-1,:])    
+                else:
+                    mean_per_pixel = cp.mean(residual, axis=0).flatten()
+                    inds = cp.argsort(cp.mean(data,axis=0).flatten())
+                    mean_estimate = cp.mean(cp.sort(mean_per_pixel[inds[:n_mean_pixels]]))
+                data-=mean_estimate
+                if diagnostic_plots:
+                    print(mean_estimate)
                 mean_handled = True
             else:
                 break
-    
-#     plt.figure()
-#     plt.imshow(cp.mean(residual,0).reshape(32,32).get())
-#     plt.colorbar()
+
+    if diagnostic_plots:
+        plt.figure()
+        plt.imshow((cp.mean(residual,0)).reshape(32,32).get())
+        plt.title(cp.nanmean(residual).get())
+        plt.colorbar()
+        pred2 = design_matrix[:1,:].T@coeffs[:1,:]
+        residual2 = (data.T - pred2).T
+        plt.figure()
+        plt.imshow((cp.mean(residual2,0)).reshape(32,32).get())
+        plt.title(cp.nanmean(residual2).get())
+        plt.colorbar()
+        mean_per_pixel = cp.mean(residual, axis=0).flatten()
+        #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
+        inds = cp.argsort(cp.mean(data,axis=0).flatten())
+        print(cp.mean(cp.sort(mean_per_pixel[inds[:100]])))
+        mean_per_pixel = cp.mean(residual2, axis=0).flatten()
+        #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
+        inds = cp.argsort(cp.mean(data,axis=0).flatten())
+        print(cp.mean(cp.sort(mean_per_pixel[inds[:100]])))
+        
     
 #     plt.figure()
 #     plt.imshow(cp.std(residual,0).reshape(32,32).get())
