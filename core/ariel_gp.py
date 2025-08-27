@@ -173,7 +173,7 @@ def define_prior(obs, model_options, data):
     model_FGS.scaler = 1e-4
     model_FGS.model = gp.Uncorrelated()
     model_FGS.model.features = ['wavelength']
-    model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*1e3 # effectively decouple FGS and AIRS - XXX
+    model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*1e3 # effectively decouple FGS and AIRS
     model_variation_non_pca = ModelSplitSensors()
     mm = dict()
     mm['FGS'] = model_FGS
@@ -207,7 +207,7 @@ def define_prior(obs, model_options, data):
     ### Noise model - uncorrelated Gaussian per point, with sigma values from preprocessing
     noise_model = gp.ParameterScaler()
     noise_model.scaler = 1. # noise must have design matrix 1 at present -> can't scale
-    noise_model.model = NoiseModel() # this model also handles the different time binnings # XXX todo
+    noise_model.model = NoiseModel() # this model also handles the different time binnings
     noise_model.model.features = ['time', 'wavelength']
     noise_model.model.features_hyper = 1 # indicates that hyperparameters (i.e. noise magnitudes) depend on wavelength
     noise_model.model.check_for_uniqueness = False # speeds things up
@@ -253,7 +253,6 @@ def define_prior(obs, model_options, data):
     model_uninitialized = copy.deepcopy(model)
     model.initialize(obs) # inform the models about the observable, so they can for example figure out how many parameters they have and initialize them to zero
 
-    # XXX add drift
     ## Set some sensible default values, this helps the non-linear solver to converge faster
     # Star spectrum: use the average of the signal per wavelength
     model.m['signal'].m['main'].m['spectrum'].model.parameters = \
@@ -310,7 +309,7 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
         visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, simple=plot_simple)
 
     # Lots of sanity checks to catch misbehaving planets in the private test set
-#     if kgs.sanity_checks_active:        #XXX 
+#     if kgs.sanity_checks_active:     
 #         obs_expected_noise_squared = copy.deepcopy(obs)
 #         obs_expected_noise_squared.labels = np.reshape(1/posterior_mean.m['noise'].get_prior_matrices(obs).prior_precision_matrix.diagonal(), (-1,1))
 #         obs_noise = copy.deepcopy(obs)
@@ -487,7 +486,7 @@ def d_msqrtabs(x):
     #deriv[np.isclose(x, 0.0)] = np.nan  # undefined at zero
     return deriv
         
-class TransitModel(gp.FixedShape): #XXX not FixedShape
+class TransitModel(gp.Model): 
     # Behaves exactly as its _model property, i.e. all calls get passed to it. Typically subclasses of this class will make it do something more interesting.
     depth_model = []
     
@@ -512,7 +511,7 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     
     def __post_init__(self):
         super().__post_init__()
-        self.common_parameters = [0,1,2,3] # XXXf
+        self.common_parameters = [0,1,2,3] 
         self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1.]
         self.AIRS_u_slopes = [[0,0]]
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
@@ -674,10 +673,6 @@ class TransitModel(gp.FixedShape): #XXX not FixedShape
     def get_prior_distribution_internal(self,obs):
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
         
-        #sigma_values = self.std_value * np.ones(self.number_of_extra_parameters)
-        #sigma_values[4] = self.base_values[4]*self.std_override # regularize SMA
-        #sigma_values[5] = self.base_values[5]*self.std_override # XXX remove when common, and do it for [2]
-        #sigma_values[2] = self.std_override #* self.base_values[2] # regularize SMA
         sigma_values = []
         transit_x0 = self.transit_params[0][0].to_x()
         for i_param in range(len(transit_x0)):
