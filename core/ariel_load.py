@@ -249,7 +249,7 @@ class ApplyPixelCorrections(kgs.BaseClass):
     clip_rows2 = None
     
     mask_dead = True
-    mask_hot = True
+    mask_hot = False
     hot_sigma_clip = 5
     linear_correction = True
     dark_current = True
@@ -431,7 +431,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     
     remove_background_based_on_rows = False
     remove_background_n_rows = 8 
-    remove_background_remove_used_rows = True
+    remove_background_remove_used_rows = False
     
     remove_background_based_on_pixels = False
     remove_background_pixels = 100
@@ -590,7 +590,6 @@ AIRS_design_matrix_np = AIRS_design_matrix.get()
 AIRS_rr = [cp.array(c) for c in kgs.dill_load(kgs.calibration_dir + 'AIRS_rr2.pickle')]
 del AIRS_C0; del AIRS_C;
 class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
-    make_diagnostic_plots = False
     residual_threshold = np.inf
     combine_rr2 = False
     cutoff_sum=0
@@ -626,7 +625,7 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
             rhs[:,isnan] = 0        
             rhs=rhs.flatten()
             
-            if self.make_diagnostic_plots and i_wavelength==0:
+            if diagnostic_plots and i_wavelength==0:
                 plt.figure()
                 plt.imshow(rhs.reshape(32,32))
                 plt.title('Raw covariance')
@@ -647,28 +646,32 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                 
             coeffs = np.linalg.lstsq(design_matrix, rhs, rcond=None)[0]    
             residual_cov = rhs - design_matrix@coeffs        
-            if self.make_diagnostic_plots and i_wavelength==0:                
+            if diagnostic_plots and i_wavelength==0:                
                 plt.figure()
                 plt.imshow(residual_cov.reshape(32,32))
                 plt.title('Covariance residual')
                 plt.colorbar()
-            noise_est_naive[:,i_wavelength] = 8+0.4*cp.sqrt(cp.abs(cp.mean(dataa[:,:,i_wavelength],0)))
-            coeffs[3:][isnan] = 0
-            if np.all(coeffs[3:][~isnan]>6):
-                noise_est = np.sqrt(coeffs[3:])          
-                noise_est = cp.array(noise_est)                
-            else:
-                # fallback
-                print('AIRS fallback')
-                noise_est = noise_est_naive[:,i_wavelength]
-                planet.diagnostics['AIRS_fallback'] = True
+            noise_est_naive[:,i_wavelength] = 0.4*cp.sqrt(64+cp.abs(cp.mean(dataa[:,:,i_wavelength],0)))
+            noise_est2 = cp.array(coeffs[3:])
+            to_change = noise_est2<noise_est_naive[:,i_wavelength]**2
+            noise_est2[to_change] = (noise_est_naive[:,i_wavelength]**2)[to_change]
+            noise_est = cp.sqrt(noise_est2)
+#             coeffs[3:][isnan] = 0
+#             if np.all(coeffs[3:][~isnan]>6):
+#                 noise_est = np.sqrt(coeffs[3:])          
+#                 noise_est = cp.array(noise_est)                
+#             else:
+#                 # fallback
+#                 print('AIRS fallback')
+#                 noise_est = noise_est_naive[:,i_wavelength]
+#                 planet.diagnostics['AIRS_fallback'] = True
             
             noise_est_full[:,i_wavelength] = noise_est
             
             #noise_est_naive[:,i_wavelength][noise_est_naive[:,i_wavelength]<8] = 8
             
             residual_cov_ratio = residual_cov/cp.max(rhs)
-            kgs.sanity_check(np.min, noise_est[~isnan], 'noise_est_min', 8, [6,12])
+            #kgs.sanity_check(np.min, noise_est[~isnan], 'noise_est_min', 8, [6,12])
             kgs.sanity_check(kgs.rms, residual_cov_ratio, 'residual_cov_rms', 1, [0,0.02])
             kgs.sanity_check(lambda x:np.max(np.abs(x)), residual_cov_ratio, 'residual_cov_max', 2, [0,0.2])
             
@@ -738,8 +741,11 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
         #kgs.sanity_check(np.nanmin, noise_est_full/noise_est_naive, 'noise_est_ratio', 3, [0.4,0.9])
         kgs.sanity_check(np.nanmax, 1-cp.std(residual,0)/residual_expected, 'residual_std_ratio', 4, [0.03,0.15])
         kgs.sanity_check(lambda x:np.nanmax(np.abs(x)), cp.mean(residual,0)/residual_expected, 'residual_mean_ratio', 5, [0,5])
-                        
-        if self.make_diagnostic_plots:
+              
+        if diagnostic_plots:
+            plt.figure()
+            plt.scatter(noise_est_naive.flatten().get(), noise_est_full.flatten().get())
+            plt.axline((0,0), slope=1, color='black')
             plt.figure()
             plt.imshow(residual_expected.get(), interpolation='none', aspect='auto')
             plt.colorbar()
@@ -785,19 +791,18 @@ def default_loaders():
     loaders = [loader, copy.deepcopy(loader)]
     
     # FGS configuration   
-    loaders[0].apply_full_sensor_corrections.inpainting_2d=False
-    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True
+    loaders[0].apply_full_sensor_corrections.inpainting_2d = True
+    loaders[0].apply_full_sensor_corrections.restore_invalids = True
+    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True    
     loaders[0].apply_time_binning.time_binning = 50
-    loaders[0].apply_wavelength_binning = ApplyWavelengthBinning2()
-    loaders[0].apply_wavelength_binning.options.n_components = 4
-    
+    loaders[0].apply_wavelength_binning = ariel_load_FGS.ApplyWavelengthBinningFGS2()
+
     # AIRS configuration
     loaders[1].apply_pixel_corrections.clip_columns=True
     loaders[1].apply_pixel_corrections.clip_columns1=39
     loaders[1].apply_pixel_corrections.clip_columns2=321    
-    loaders[1].apply_full_sensor_corrections.inpainting_wavelength=True
-    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows=True
     loaders[1].apply_time_binning.time_binning = 5
+    loaders[1].apply_wavelength_binning = ApplyWavelengthBinningAIRS2()
      
     return loaders
 

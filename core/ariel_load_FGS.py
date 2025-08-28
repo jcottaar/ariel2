@@ -34,7 +34,7 @@ FGS_weights = cp.array(kgs.dill_load(kgs.calibration_dir + '/FGS_weights.pickle'
 
 class ApplyWavelengthBinningFGS2(kgs.BaseClass):
     
-    n_mean_pixels = 100
+    n_mean_pixels = 0
     
     def __call__(self, data, planet, observation_number):
         coeffs = get_coeffs(data.data, n_mean_pixels=self.n_mean_pixels)[0]
@@ -105,7 +105,12 @@ def get_coeffs(data, n_mean_pixels=-1):
     #plt.plot(design_matrix_noise.sum(0).T.get())
 
     #print((design_matrix_noise.T@design_matrix_noise).shape)
-    coeffs = cp.linalg.solve((design_matrix_noise.T@design_matrix_noise).todense(), design_matrix_noise.T@rhs)
+    
+    #b = ariel_numerics.spmv_csc_T_times_vec_deterministic(design_matrix_noise.T, rhs)
+    b = cp.array(design_matrix_noise.T.get() @ rhs.get())
+    #print(kgs.rms((design_matrix_noise.T@design_matrix_noise).todense().get()), kgs.rms(rhs.get()), kgs.rms(b.get()))
+    coeffs = cp.linalg.solve((design_matrix_noise.T@design_matrix_noise).todense(), b)
+    #print(coeffs.flatten()[0])
     #residual = rhs - design_matrix_noise*coeffs
     noise_est = cp.sqrt(coeffs[N_components_use:])
     noise_est[cp.isnan(noise_est) | (noise_est<1)] = 1
@@ -157,6 +162,7 @@ def get_coeffs(data, n_mean_pixels=-1):
     # plt.scatter(np.sqrt(np.diag(Psi)), noise_est.get(), )
     # plt.axline((0,0),slope=1/0.6, color='black')
 
+    #print(noise_est.flatten()[0])
       
 
     if n_mean_pixels!=0:
@@ -177,6 +183,8 @@ def get_coeffs(data, n_mean_pixels=-1):
 
         res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(data.T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
         coeffs = res[0]
+        
+        #print(coeffs.flatten()[0])
         
         #print((design_matrix@design_matrix.T).shape)
         # plt.figure()
@@ -293,5 +301,6 @@ def get_coeffs(data, n_mean_pixels=-1):
 #     plt.imshow((cp.mean(residual,0)/(cp.std(residual,0))).reshape(32,32).get())
 #     plt.colorbar()
 
+    #print(coeffs.flatten()[0])
 
     return (coeffs,cp.sum(pred,0))

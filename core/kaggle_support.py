@@ -73,6 +73,9 @@ def recommend_n_workers():
     return n_workers
 n_threads = 1
 
+# os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")  # deterministic cuBLAS
+# os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")           # disable TF32 (TF32 can vary)
+# os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")     # more stable kernel ordering
 n_cuda_devices = torch.cuda.device_count()
 process_name = multiprocess.current_process().name
 if not multiprocess.current_process().name == "MainProcess":
@@ -98,9 +101,9 @@ def list_attrs(obj):
     for name, val in inspect.getmembers(obj):
         if name.startswith("_"):
             continue
-        # skip methods, but let descriptors through
-        if callable(val) and not isinstance(val, property):
-            continue
+        # # skip methods, but let descriptors through
+        # if callable(val) and not isinstance(val, property):
+        #     continue
         print(f"{name} = {val}")
 
 def remove_and_make_dir(path):
@@ -709,13 +712,22 @@ def score_metric(data,reference_data,print_results=True):
     
     #rms_error = rms(solution_np-submission.iloc[:,1:284].to_numpy())
     rms_error_fgs = rms(solution_np[:,:1]-submission_np[:,:1])
+    rms_fgs_per = np.abs(solution_np[:,:1]-submission_np[:,:1])
+    rms_error_fgs_median = np.median(rms_fgs_per)
+    
+    
     rms_error_airs = rms(solution_np[:,1:]-submission_np[:,1:])
+    rms_error_airs_per = np.sqrt(np.mean( (solution_np[:,1:]-submission_np[:,1:])**2, 1 ))
+    rms_error_airs_median = np.median(rms_error_airs_per)
+    
     score = _score(solution, submission, 'planet_id', np.mean(solution_np), np.std(solution_np), fgs_weight=57.846)
     
     if print_results:        
-        print(f"Score:          {score:.4f}")
-        print(f"RMS error FGS:  {1e6*rms_error_fgs:.2f} ppm")
-        print(f"RMS error AIRS: {1e6*rms_error_airs:.2f} ppm")
+        print(f"Score:           {score:.4f}")
+        print(f"RMS error FGS:   {1e6*rms_error_fgs:.2f} ppm")
+        print(f"mRMS error FGS:  {1e6*rms_error_fgs_median:.2f} ppm")
+        print(f"RMS error AIRS:  {1e6*rms_error_airs:.2f} ppm")
+        print(f"mRMS error AIRS: {1e6*rms_error_airs_median:.2f} ppm")
     
     return score,rms_error_fgs,rms_error_airs
 

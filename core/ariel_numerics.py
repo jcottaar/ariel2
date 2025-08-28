@@ -611,3 +611,129 @@ def lstsq_nanrows_gls_with_pinv(
     A_pinv_cov = cp.linalg.solve(AtA, Z.T)                                # (P, N_valid)
 
     return coeffs, A_pinv_cov, mask
+
+import cupy as cp
+from cupyx.scipy.linalg import solve_triangular
+
+def chol_solve(A, B):
+    """
+    Solve A @ X = B using a deterministic Cholesky-based method.
+    Interface matches cp.linalg.solve(A, B).
+
+    Assumes A is symmetric/Hermitian positive-definite (or close).
+    For numerical robustness, we:
+      1) work in float64
+      2) symmetrize A: A <- (A + A^H)/2
+      3) add a tiny, scale-aware ridge on the diagonal
+
+    Parameters
+    ----------
+    A : (n, n) cupy.ndarray
+        Coefficient matrix (SPD/Hermitian PD).
+    B : (n,) or (n, k) cupy.ndarray
+        Right-hand side.
+
+    Returns
+    -------
+    X : cupy.ndarray
+        Solution with shape like B.
+    """
+    # Promote to float64 (improves stability & determinism)
+    A64 = A.astype(cp.float64, copy=False)
+    B64 = B.astype(cp.float64, copy=False)
+
+    # Symmetrize to kill tiny asymmetries from previous GEMMs
+    A64 = 0.5 * (A64 + A64.T.conj())
+    
+    print(kgs.rms(A64.flatten().get()))
+
+    # # Tiny Tikhonov ridge to ensure strict PD
+    # n = A64.shape[0]
+    # # trace can be complex if A64 has tiny imag parts; take real
+    # tr = cp.real(cp.trace(A64))
+    # lam = (1e-10 * tr / n) if n > 0 else 0.0
+    # if lam != 0.0:
+    #     A64 = A64.copy()
+    #     A64[cp.arange(n), cp.arange(n)] += lam
+
+    # Cholesky factorization: A64 = L @ L^H (L lower-triangular)
+    try:
+        L = cp.linalg.cholesky(A64)
+        print(kgs.rms(L.flatten().get()))
+    except cp.linalg.LinAlgError as e:
+        # As a last resort, bump ridge and retry once
+        if n > 0:
+            A64 = A64.copy()
+            A64[cp.arange(n), cp.arange(n)] += 1e-8 * (tr / n if tr != 0 else 1.0)
+            L = cp.linalg.cholesky(A64)
+        else:
+            raise e
+
+            
+    # Solve L @ Y = B  and then  L^H @ X = Y
+    Y = solve_triangular(L, B64, lower=True, check_finite=False)
+    print(kgs.rms(Y.flatten().get()))
+    X64 = solve_triangular(L.T.conj(), Y, lower=False, check_finite=False)
+    print('X', kgs.rms(X64.flatten().get()))
+
+    return X64  # float64 result (convert back if you *must*: X64.astype(B.dtype, copy=False))
+
+
+import cupy as cp
+from cupyx.scipy.sparse import csc_matrix
+
+def spmv_csc_T_times_vec_deterministic(A: csc_matrix, x: cp.ndarray) -> cp.ndarray:
+    """
+    Deterministically compute y = A.T @ x for CSC sparse A on GPU.
+    - Coalesces duplicates and sorts row indices within each column.
+    - Uses per-column float64 dot products (cublasDdot), which are deterministic
+      when CUBLAS_WORKSPACE_CONFIG is set.
+
+    Parameters
+    ----------
+    A : cupyx.scipy.sparse.csc_matrix, shape (m, n)
+    x : cupy.ndarray, shape (m,)
+
+    Returns
+    -------
+    y : cupy.ndarray, shape (n,), dtype=float64
+    """
+    if not isinstance(A, csc_matrix):
+        A = A.tocsc()
+
+    # Work on a copy so we can canonicalize without touching the original
+    A = A.copy()
+
+    # Canonicalize: combine duplicates, sort indices
+    A.sum_duplicates()
+    A.sort_indices()
+
+    indptr = A.indptr
+    indices = A.indices
+    data = A.data
+
+    # Promote to float64 for stable accumulation
+    x64 = x.astype(cp.float64, copy=False)
+    data64 = data.astype(cp.float64, copy=False)
+
+    n = A.shape[1]
+    y = cp.empty(n, dtype=cp.float64)
+
+    # For each column j, compute dot( A[:, j], x ) in a fixed order
+    for j in range(n):
+        start, end = indptr[j], indptr[j+1]
+        if start == end:
+            y[j] = 0.0
+            continue
+
+        rows = indices[start:end]
+        vals = data64[start:end]
+
+        # rows are sorted (sort_indices above), so take x in that fixed order
+        xsub = x64[rows]
+
+        # Use BLAS dot (deterministic when CUBLAS_WORKSPACE_CONFIG is set)
+        # cupy.dot on 1D arrays maps to cublasDdot
+        y[j] = cp.dot(vals, xsub)
+
+    return y

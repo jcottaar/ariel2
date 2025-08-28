@@ -38,7 +38,9 @@ class ModelOptions(kgs.BaseClass):
  
     # Configuration of the drift prior
     hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
-    FGS_order = -1 # -1 for GP
+    FGS_order = 3 # -1 for GP
+    AIRS_order_time = 3 # -1 for GP
+    AIRS_order_wavelength = 3
     
     include_background = False
 
@@ -82,23 +84,46 @@ def define_prior(obs, model_options, data):
     
     ## AIRS drift: average (depends only on time) and spectral (depends on time and wavelength); we'll define them in 'm' and then create the final class at the end
     m = dict()
-    # Define average AIRS drift - 1D Gaussian Processs over time
-    drift_hyper = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters.pickle')
-    m['average'] = gp.SquaredExponentialKernelMulti() # our standard GP class, combining squared-exponential kernels for multiple length scales
-    m['average'].features = ['time']
-    m['average'].lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_old.pickle')['average_lengths'] # lengths for the kernels are in this file for legacy reasons
-    m['average'].sigmas = drift_hyper['average_sigmas'] # load tuned values
-    m['average'].require_mean_of_non_noise_zero = True # we don't want the drift to catch offsets
-    # Define spectral AIRS drift - 2D Gaussian Processs over time and wavelength
-    m['spectral'] = gp.Sparse2D() # this class does the KISS-GP to speed things up
-    m['spectral'].features = ['time', 'wavelength']        
-    m['spectral'].model = gp.SquaredExponentialKernelMulti()
-    m['spectral'].model.features = ['x','y'] # dummy features introduced by gp.Sparse2D()
-    m['spectral'].model.lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_old.pickle')['spectral_lengths']
-    m['spectral'].model.sigmas = drift_hyper['spectral_sigmas']
-    m['spectral'].model.sigmas[-1] = m['spectral'].model.sigmas[-1]*1e-2
-    m['spectral'].model.require_mean_of_non_noise_zero = True
-    m['spectral'].h = np.array([0.4, 0.05])*model_options.hfactor # grid resolution for KISS-GP
+    if model_options.AIRS_order_time==-1:
+        # Define average AIRS drift - 1D Gaussian Processs over time
+        drift_hyper = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters.pickle')
+        m['average'] = gp.SquaredExponentialKernelMulti() # our standard GP class, combining squared-exponential kernels for multiple length scales
+        m['average'].features = ['time']
+        m['average'].lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_old.pickle')['average_lengths'] # lengths for the kernels are in this file for legacy reasons
+        m['average'].sigmas = drift_hyper['average_sigmas'] # load tuned values
+        m['average'].require_mean_of_non_noise_zero = True # we don't want the drift to catch offsets
+        # Define spectral AIRS drift - 2D Gaussian Processs over time and wavelength
+        m['spectral'] = gp.Sparse2D() # this class does the KISS-GP to speed things up
+        m['spectral'].features = ['time', 'wavelength']        
+        m['spectral'].model = gp.SquaredExponentialKernelMulti()
+        m['spectral'].model.features = ['x','y'] # dummy features introduced by gp.Sparse2D()
+        m['spectral'].model.lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_old.pickle')['spectral_lengths']
+        m['spectral'].model.sigmas = drift_hyper['spectral_sigmas']
+        m['spectral'].model.sigmas[-1] = m['spectral'].model.sigmas[-1]*1e-2
+        m['spectral'].model.require_mean_of_non_noise_zero = True
+        m['spectral'].h = np.array([0.4, 0.05])*model_options.hfactor # grid resolution for KISS-GP        
+    else:
+        m['average'] = gp.FixedValue()
+        m['spectral'] = gp.FixedBasis()
+        m['spectral'].features = ['time', 'wavelength']
+        m['spectral'].regularization_variance = np.array([1e4]*(model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
+        t = obs.df['time'].to_numpy()
+        t = t[obs.df['is_AIRS']]
+        times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
+        t = obs.df['wavelength'].to_numpy()
+        t = t[obs.df['is_AIRS']]
+        wavelength_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
+        m['spectral'].basis_functions = np.zeros((len(times_norm), model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
+        for i_order in range(1,model_options.AIRS_order_time+1):
+            for j_order in range(model_options.AIRS_order_wavelength+1):
+                poly_vals1 = np.zeros(model_options.AIRS_order_time+1)
+                poly_vals1[i_order] = 1
+                poly_vals2 = np.zeros(model_options.AIRS_order_wavelength+1)
+                poly_vals2[j_order] = 1
+                m['spectral'].basis_functions[:,j_order*model_options.AIRS_order_time + i_order - 1] = np.polynomial.chebyshev.chebval(times_norm, poly_vals1)*np.polynomial.chebyshev.chebval(wavelength_norm, poly_vals2)
+        # plt.figure()
+        # plt.imshow(m['spectral'].basis_functions, aspect='auto', interpolation='none')
+        # plt.pause(0.001)
     # Combine average and spectral drift
     drift_model_AIRS = gp.ParameterScaler()
     drift_model_AIRS.scaler = 1e-3 # Typical parameter scale, helps with numerics
@@ -512,7 +537,7 @@ class TransitModel(gp.Model):
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [0,1,2,3] 
-        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1.]
+        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1.]        
         self.AIRS_u_slopes = [[0,0]]
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
