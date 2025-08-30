@@ -43,7 +43,7 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
 
 def run_model_test(regenerate_reference=False):
     models = dict()
-    models['simple'] = ariel_model.baseline_model().model
+    models['simple'] = ariel_simple.SimpleModel()
     models['gp'] = ariel_gp.PredictionModel()
     train_data = kgs.load_all_train_data()
     for name,model in models.items():

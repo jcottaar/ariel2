@@ -11,6 +11,9 @@ class Fudger(kgs.Model):
     bias_a: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     bias_b: list = field(init=True, default_factory=lambda:[0.,0.])
     sigma_fudge : list = field(init=True, default_factory=lambda:[1.,1.])
+    sigma_offset: list = field(init=True, default_factory=lambda:[0.,0.])
+    
+    include_sigma_offset: bool = field(init=True, default=False)
     
     model: kgs.Model = field(init=True, default=None)
     
@@ -18,7 +21,10 @@ class Fudger(kgs.Model):
     _cached_result = None
     
     def _to_x(self):
-        return np.reshape([self.bias_a + self.bias_b + self.sigma_fudge], (-1,))
+        the_list = self.bias_a + self.bias_b + self.sigma_fudge
+        if self.include_sigma_offset:
+            the_list += self.sigma_offset
+        return np.reshape(the_list, (-1,))
     def _from_x(self,x):
         self.bias_a[0] = x[0]
         self.bias_a[1] = x[1]
@@ -26,6 +32,10 @@ class Fudger(kgs.Model):
         self.bias_b[1] = x[3]
         self.sigma_fudge[0] = x[4]
         self.sigma_fudge[1] = x[5]
+        if self.include_sigma_offset:
+            self.sigma_offset[0] = x[6]
+            self.sigma_offset[1] = x[7]
+        assert np.all(self._to_x() == x)
         
     def alter_mats(self, mats):
         y_true,y_pred,cov_pred = mats
@@ -33,6 +43,8 @@ class Fudger(kgs.Model):
         y_pred[:,0] += self.bias_b[0]
         y_pred[:,1:] *= self.bias_a[1]
         y_pred[:,1:] += self.bias_b[1]
+        cov_pred[:,0,0] += self.sigma_offset[0]**2
+        cov_pred[:,1:,1:] += self.sigma_offset[1]**2
         cov_pred[:,0,:] *= self.sigma_fudge[0]
         cov_pred[:,:,0] *= self.sigma_fudge[0]
         cov_pred[:,1:,:] *= self.sigma_fudge[1]
@@ -86,6 +98,103 @@ class Fudger(kgs.Model):
         #     d.spectrum_cov[:,0] *= self.sigma_fudge[0]
         #     d.spectrum_cov[1:,:] *= self.sigma_fudge[1]
         #     d.spectrum_cov[:,1:] *= self.sigma_fudge[1]
+            
+        return data
+    
+    
+@dataclass
+class Fudger2(kgs.Model):
+    bias_a: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
+    bias_b: list = field(init=True, default_factory=lambda:[0.,0.])    
+    sigma_offset: list = field(init=True, default_factory=lambda:[0.,0.])
+    sigma_fudge_FGS = 1.
+    sigma_fudge_AIRS_mean = 1.
+    sigma_fudge_AIRS_var = 1.
+
+    
+    model: kgs.Model = field(init=True, default=None)
+    
+    _cached_planet_id = None
+    _cached_result = None
+    _disable_transforms = False
+    
+    def _to_x(self):
+        the_list = self.bias_a + self.bias_b + self.sigma_offset + [self.sigma_fudge_FGS, self.sigma_fudge_AIRS_mean, self.sigma_fudge_AIRS_var]        
+        return np.reshape(the_list, (-1,))
+    def _from_x(self,x):
+        self.bias_a[0] = x[0]
+        self.bias_a[1] = x[1]
+        self.bias_b[0] = x[2]
+        self.bias_b[1] = x[3]
+        self.sigma_offset[0] = x[4]
+        self.sigma_offset[1] = x[5]
+        self.sigma_fudge_FGS = x[6]
+        self.sigma_fudge_AIRS_mean = x[7]
+        self.sigma_fudge_AIRS_var = x[8]
+        assert np.all(self._to_x() == x)
+        
+    def alter_mats(self, mats):
+        y_true,y_pred,cov_pred = mats
+        y_pred[:,0] *= self.bias_a[0]
+        y_pred[:,0] += self.bias_b[0]
+        y_pred[:,1:] *= self.bias_a[1]
+        y_pred[:,1:] += self.bias_b[1]
+        cov_pred[:,0,0] += self.sigma_offset[0]**2
+        cov_pred[:,1:,1:] += self.sigma_offset[1]**2
+        cov_pred[:,0,:] *= self.sigma_fudge_FGS
+        cov_pred[:,:,0] *= self.sigma_fudge_FGS
+        AIRS_mean = np.mean(cov_pred[:,1:,1:], axis=(1,2))
+        AIRS_var = cov_pred[:,1:,1:]-AIRS_mean[:,None,None]
+        AIRS_mean *= self.sigma_fudge_AIRS_mean**2
+        AIRS_var *= self.sigma_fudge_AIRS_var**2
+        cov_pred[:,1:,1:] = AIRS_var+AIRS_mean[:,None,None]
+        #cov_pred[:,1:,1:] *= self.sigma_fudge_AIRS_mean**2
+        #cov_pred[:,:,1:] *= self.sigma_fudge_AIRS_mean
+    
+    def _train(self,train_data):
+        self.model.train(train_data)
+        self.state=1
+        ii=0
+        t=time.time()
+        
+        self._disable_transforms = True
+        inferred_data = self.infer(train_data)
+        self._disable_transforms = False
+        #print(kgs.score_metric(inferred_data,train_data))
+        mats = kgs.data_to_mats(inferred_data,train_data)
+        
+        #@kgs.profile_each_line
+        def cost(x):
+            
+            self._from_x(x)
+            #inferred_data = self.infer(train_data)
+            mats_here = copy.deepcopy(mats)
+            self.alter_mats(mats_here)
+            nonlocal  ii
+            ii+=1
+            #print(ii)
+            res =-kgs.score_metric_fast(*mats_here)
+            #print(res)
+            return res
+        x0 = self._to_x()
+        res = scipy.optimize.minimize(cost,x0,tol=1e-2)
+        self._from_x(res.x)
+        print('Opt time', time.time()-t)
+        
+    
+    def _infer(self,data):
+        if not self._cached_planet_id is None and [d.planet_id for d in data]==self._cached_planet_id:
+            data = copy.deepcopy(self._cached_result)
+        else:
+            data = self.model.infer(data)
+            if self._cached_planet_id is None:
+                self._cached_result = copy.deepcopy(data)
+                self._cached_planet_id = [d.planet_id for d in data]
+                
+        mats = kgs.data_to_mats(data,data)
+        if not self._disable_transforms:
+            self.alter_mats(mats)
+        kgs.mats_to_data(data,data,mats)
             
         return data
 
