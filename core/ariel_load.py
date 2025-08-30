@@ -656,6 +656,8 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
             to_change = noise_est2<noise_est_naive[:,i_wavelength]**2
             noise_est2[to_change] = (noise_est_naive[:,i_wavelength]**2)[to_change]
             noise_est = cp.sqrt(noise_est2)
+            noise_est[isnan] = 0
+            assert not cp.any(cp.isnan(noise_est))
 #             coeffs[3:][isnan] = 0
 #             if np.all(coeffs[3:][~isnan]>6):
 #                 noise_est = np.sqrt(coeffs[3:])          
@@ -691,13 +693,16 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                 if self.sequential_fit and mean_handled:
                     res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix[1:,:].T, return_A_pinv_w=True, sigma=noise_est)
                     coeffs = res[0]
+                    assert not cp.any(cp.isnan(coeffs))
                     intermediate_residual = (dataa[:,:,i_wavelength].T - design_matrix[1:,:].T@coeffs).T    
                     res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(intermediate_residual.T, design_matrix[:1,:].T, return_A_pinv_w=True, sigma=noise_est)
                     coeffs = res[0]
+                    assert not cp.any(cp.isnan(coeffs))
                     residual[:,:,i_wavelength] = (intermediate_residual.T - design_matrix[:1,:].T@coeffs).T                       
                 else:
                     res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
                     coeffs = res[0]
+                    assert not cp.any(cp.isnan(coeffs))
                     residual[:,:,i_wavelength] = (dataa[:,:,i_wavelength].T - design_matrix.T@coeffs).T    
                 
                     A_pinv_w = res[1]
@@ -705,7 +710,9 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                     A_pinv_w_full[:,~cp.isnan(dataa[0,:,i_wavelength])] = A_pinv_w                
                     mat = design_matrix.T@A_pinv_w_full
                     cov_expected = cp.diag(noise_est**2) - mat@cp.diag(noise_est**2)@mat.T
+                    cov_expected[cov_expected<0] = 0
                     residual_expected[:,i_wavelength] = cp.sqrt(cp.diag(cov_expected))
+                    assert not cp.any(cp.isnan(residual_expected[:,i_wavelength]))
 
                     residual_expected_ratio = cp.mean(residual[:,:,i_wavelength],0)/residual_expected[:,i_wavelength]*np.sqrt(dataa.shape[0])
                     residual_expected_ratio[cp.isnan(residual_expected_ratio)] = 0
@@ -765,6 +772,7 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
             plt.figure()
             plt.imshow(cp.log(noise_est_full).get(), interpolation='none', aspect='auto')
             plt.colorbar()
+            print('min', cp.min(noise_est_full), cp.nanmin(noise_est_full))
             plt.title('Noise est')
             for ii in range(1):
                 plt.figure()

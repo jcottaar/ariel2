@@ -50,6 +50,9 @@ class ModelOptions(kgs.BaseClass):
     update_rate = 1 # update rate 
     max_log_update_hyperparameters = 1 # maximum update of log(hyperparameters) in each iteration
     
+    # Diagnostics
+    make_noise_consistent = False
+    
     def __post_init__(self):
         super().__post_init__()
         self.transit_prior_info = kgs.dill_load(kgs.code_dir + 'transit_depth_gp_with_pca.pickle')
@@ -327,7 +330,7 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
     posterior_mean, posterior_samples = gp.solve_gp_nonlinear(prior_model, obs, rng=np.random.default_rng(seed=data.planet_id), \
         update_rate=model_options.update_rate, n_iter=model_options.n_iter, update_hyperparameters_from=0,\
         hyperparameter_method = 'gradient_descent', adapt_func = adapt_func, max_log_update_initial = model_options.max_log_update_hyperparameters,\
-        n_samples = model_options.n_samples_sigma_est, fill_noise_parameters=False)
+        n_samples = model_options.n_samples_sigma_est, fill_noise_parameters=model_options.make_noise_consistent)
 
     # Plot if desired
     if plot_final:
@@ -439,6 +442,10 @@ class PredictionModel(kgs.Model):
 
         test_data.spectrum = copy.deepcopy(pred)
         test_data.spectrum_cov = copy.deepcopy(cov)
+        try:
+            test_data.diagnostics['transit_scaler'] = results['model_mean'].m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor 
+        except:
+            pass
         
         return test_data
 

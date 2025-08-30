@@ -229,6 +229,17 @@ def gaussian_2D_filter_with_nans(U, sigma):
     assert not np.any(np.isnan(Z))
     return Z
 
+def add_cursor(sc):
+
+    import mplcursors
+    cursor = mplcursors.cursor(sc, hover=True)
+
+    @cursor.connect("add")
+    def on_add(sel):
+        i = sel.index
+        sel.annotation.set_text(f"index={i}")
+
+
 def to_cpu(array):
     if isinstance(array, cp.ndarray):
         return array.get()
@@ -420,6 +431,8 @@ class Transit(BaseClass):
     # 5: wavelength binning done
     data: list = field(init=True, default_factory = lambda:[SensorData(is_FGS=True), SensorData(is_FGS=False)]) # 0: FGS, 1: AIRS
     
+    diagnostics: dict = field(init=True, default_factory = dict)
+    
     def _check_constraints(self):
         assert len(self.data)==2
         assert self.data[0].is_FGS
@@ -438,7 +451,7 @@ class Transit(BaseClass):
             cache_file_name = loader_cache_dir + '/' + hashlib.sha256(dill.dumps(loaders)).hexdigest()[:10] + '_' + str(planet.planet_id) + '_' + str(self.observation_number) + '_' + str(planet.is_train) + '_' + str(target_step) +'.pickle';
             #print(cache_file_name)
             if os.path.isfile(cache_file_name):
-                self.data = dill_load(cache_file_name)
+                (self.data, self.diagnostics) = dill_load(cache_file_name)
                 self.loading_step = target_step
                 self.check_constraints()
                 return
@@ -462,7 +475,7 @@ class Transit(BaseClass):
             self.check_constraints()
         if caching:
             assert not os.path.isfile(cache_file_name)
-            dill_save(cache_file_name, self.data)
+            dill_save(cache_file_name, (self.data, self.diagnostics))
         assert self.loading_step == target_step
         
 @dataclass
@@ -702,7 +715,111 @@ def make_submission_dataframe(data, include_sigma=True):
     submission = submission.astype({'planet_id':'int64'})
     return submission
 
+def data_to_mats(data, reference_data):
+    y_true = np.stack([d.spectrum for d in reference_data])
+    y_pred = np.stack([d.spectrum for d in data])
+    cov_pred = np.stack([d.spectrum_cov for d in data])
     
+    
+    return cp.array(y_true),cp.array(y_pred),cp.array(cov_pred)
+
+def mats_to_data(data, reference_data, mats):
+    y_true,y_pred,cov_pred = mats
+    for d, yp, covp in zip(data,y_pred,cov_pred):
+        d.spectrum = yp.get()
+        d.spectrum_cov = covp.get()
+    
+    if debugging_mode>=2:
+        mats_test = data_to_mats(data, reference_data)
+        for ii in range(3):
+            assert(cp.all(mats[ii]==mats_test[ii]))
+    
+
+# def score_metric_fast(y_true, y_pred, cov_pred):
+#     #y_true = np.stack([d.spectrum for d in reference_data])
+#     #y_pred = np.stack([d.spectrum for d in data])
+#     #sigma_pred = np.stack([np.sqrt(np.diag(d.spectrum_cov)) for d in data])
+#     sigma_pred = cp.array([cp.sqrt(cp.diag(cov)) for cov in cov_pred]).get()
+#     y_true = y_true.get()
+#     y_pred = y_pred.get()
+#     n_wavelengths = 283
+    
+#     sigma_true = np.append(
+#         np.array(
+#             [
+#                 1e-6,
+#             ]
+#         ),
+#         np.ones(n_wavelengths - 1) * 1e-5,
+#     )
+    
+#     naive_mean, naive_sigma = cp.mean(y_true), cp.std(y_true)
+    
+#     GLL_pred = sp.stats.norm.logpdf(y_true, loc=y_pred, scale=sigma_pred)
+#     GLL_true = sp.stats.norm.logpdf(y_true, loc=y_true, scale=sigma_true * np.ones_like(y_true))
+#     GLL_mean = sp.stats.norm.logpdf(y_true, loc=naive_mean * np.ones_like(y_true), scale=naive_sigma * np.ones_like(y_true))
+
+#     # normalise the score, right now it becomes a matrix instead of a scalar.
+#     ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)
+
+#     fgs_weight=57.846
+#     weights = np.append(np.array([fgs_weight]), np.ones(n_wavelengths - 1))
+#     weights = weights * np.ones_like(ind_scores)
+#     submit_score = np.average(ind_scores, weights=weights)
+#     return float(submit_score) # clipping between 0 and 1 removed
+
+#@profile_each_line
+def score_metric_fast(y_true, y_pred, cov_pred, fgs_weight=57.846):
+    """
+    y_true:  (N, W) cupy.ndarray
+    y_pred:  (N, W) cupy.ndarray
+    cov_pred: (N, W, W) cupy.ndarray  or list/tuple of (W, W) CuPy arrays/sparse matrices
+    returns: Python float (copied from GPU)
+    """
+    # Ensure GPU arrays
+    sigma_pred = cp.sqrt(cp.diagonal(cov_pred, axis1=-2, axis2=-1))  # (N, W)
+
+    N, W = y_true.shape
+
+    # Fixed per-wavelength sigma for the "true" model
+    sigma_true = cp.concatenate(
+        (cp.array([1e-6], dtype=y_true.dtype),
+         cp.ones(W - 1, dtype=y_true.dtype) * 1e-5)
+    )  # shape (W,)
+
+    # Baseline (naive) mean/sigma across all entries
+    naive_mean = y_true.mean()
+    naive_sigma = y_true.std()
+
+    # Numerically safe normal logpdf on GPU
+    eps = cp.finfo(y_true.dtype).tiny
+
+    def norm_logpdf(x, loc, scale):
+        s = cp.maximum(scale, eps)
+        z = (x - loc) / s
+        return -0.5 * (cp.log(2 * cp.pi) + 2 * cp.log(s) + z**2)
+
+    # Broadcast shapes:
+    # y_true, y_pred, sigma_pred -> (N, W)
+    # sigma_true -> (W,) (broadcast to (N, W))
+    # naive_* -> scalars (broadcast to (N, W))
+    GLL_pred = norm_logpdf(y_true, y_pred, sigma_pred)
+    GLL_true = norm_logpdf(y_true, y_true, sigma_true)
+    GLL_mean = norm_logpdf(y_true, naive_mean, naive_sigma)
+
+    ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)
+
+    # Per-wavelength weights (duplicate across rows)
+    w = cp.concatenate(
+        (cp.array([fgs_weight], dtype=y_true.dtype),
+         cp.ones(W - 1, dtype=y_true.dtype))
+    )  # (W,)
+    Wmat = cp.broadcast_to(w, ind_scores.shape)  # (N, W)
+
+    submit_score = cp.average(ind_scores, weights=Wmat)  # scalar on GPU
+    return float(submit_score.get())
+    
+
 def score_metric(data,reference_data,print_results=True):
     solution = make_submission_dataframe(reference_data, include_sigma=False)
     submission = make_submission_dataframe(data)
@@ -724,10 +841,13 @@ def score_metric(data,reference_data,print_results=True):
     
     if print_results:        
         print(f"Score:           {score:.4f}")
-        print(f"RMS error FGS:   {1e6*rms_error_fgs:.2f} ppm")
-        print(f"mRMS error FGS:  {1e6*rms_error_fgs_median:.2f} ppm")
-        print(f"RMS error AIRS:  {1e6*rms_error_airs:.2f} ppm")
-        print(f"mRMS error AIRS: {1e6*rms_error_airs_median:.2f} ppm")
+        print(f"RMS error FGS:   {1e6*rms_error_fgs:.5f} ppm")
+        print(f"mRMS error FGS:  {1e6*rms_error_fgs_median:.5f} ppm")
+        print(f"RMS error AIRS:  {1e6*rms_error_airs:.5f} ppm")
+        print(f"mRMS error AIRS: {1e6*rms_error_airs_median:.5f} ppm")
+        
+    if debugging_mode>=1:
+        assert(score - score_metric_fast(*data_to_mats(data,reference_data)) < 1e-9)
     
     return score,rms_error_fgs,rms_error_airs
 

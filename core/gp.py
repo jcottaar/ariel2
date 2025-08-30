@@ -1155,7 +1155,7 @@ def sample_from_prior(model, obs, rng=None, n_samples=0):
 
     return model
 
-@kgs.profile_each_line
+#@kgs.profile_each_line
 def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True):   
     # Solves the GP assuming the model is linear.
     # Inputs:
