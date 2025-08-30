@@ -835,7 +835,13 @@ def score_metric(data,reference_data,print_results=True):
     
     rms_error_airs = rms(solution_np[:,1:]-submission_np[:,1:])
     rms_error_airs_per = np.sqrt(np.mean( (solution_np[:,1:]-submission_np[:,1:])**2, 1 ))
+    #print(rms_error_airs_per.shape)
     rms_error_airs_median = np.median(rms_error_airs_per)
+    
+    diff_airs = solution_np[:,1:]-submission_np[:,1:]
+    rms_error_airs_var = rms(diff_airs-np.mean(diff_airs,1)[:,None])
+    rms_error_airs_var_per = np.sqrt(np.mean( (diff_airs-np.mean(diff_airs,1)[:,None])**2, 1 ))
+    rms_error_airs_var_median = np.median(rms_error_airs_var_per)
     
     score = _score(solution, submission, 'planet_id', np.mean(solution_np), np.std(solution_np), fgs_weight=57.846)
     
@@ -845,6 +851,8 @@ def score_metric(data,reference_data,print_results=True):
         print(f"mRMS error FGS:  {1e6*rms_error_fgs_median:.5f} ppm")
         print(f"RMS error AIRS:  {1e6*rms_error_airs:.5f} ppm")
         print(f"mRMS error AIRS: {1e6*rms_error_airs_median:.5f} ppm")
+        print(f"RMS error AIRSv: {1e6*rms_error_airs_var:.5f} ppm")
+        print(f"mRMS error AIRSv:{1e6*rms_error_airs_var_median:.5f} ppm")
         
     if debugging_mode>=1:
         assert(score - score_metric_fast(*data_to_mats(data,reference_data)) < 1e-9)

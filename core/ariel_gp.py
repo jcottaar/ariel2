@@ -35,6 +35,7 @@ class ModelOptions(kgs.BaseClass):
     update_transit_variation_sigma = True # whether to update the magnitude of the transit depth variation; this effectively makes the fit less aggressive if the transit depth seems flat
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
     transit_prior_info = 0
+    FGS_AIRS_decoupling = 1e3
  
     # Configuration of the drift prior
     hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
@@ -201,7 +202,7 @@ def define_prior(obs, model_options, data):
     model_FGS.scaler = 1e-4
     model_FGS.model = gp.Uncorrelated()
     model_FGS.model.features = ['wavelength']
-    model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*1e3 # effectively decouple FGS and AIRS
+    model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*model_options.FGS_AIRS_decoupling # effectively decouple FGS and AIRS
     model_variation_non_pca = ModelSplitSensors()
     mm = dict()
     mm['FGS'] = model_FGS

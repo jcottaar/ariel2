@@ -26,6 +26,7 @@ def run_all_tests(regenerate_reference=False):
     
     
 def run_loader_test(use_cache=False, regenerate_reference=False):
+    kgs.debugging_mode = 2
     train_data = kgs.load_all_train_data()
     data = train_data[75]
     loaders = ariel_load.default_loaders()
@@ -42,6 +43,7 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
         raise Exception('Mismatch in loader test')
 
 def run_model_test(regenerate_reference=False):
+    kgs.debugging_mode = 2
     models = dict()
     models['simple'] = ariel_simple.SimpleModel()
     models['gp'] = ariel_gp.PredictionModel()
