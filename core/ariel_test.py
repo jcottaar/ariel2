@@ -46,13 +46,15 @@ def run_model_test(regenerate_reference=False):
     kgs.debugging_mode = 2
     models = dict()
     models['simple'] = ariel_simple.SimpleModel()
-    models['gp'] = ariel_gp.PredictionModel()
+    models['baseline'] = ariel_model.baseline_model()
     train_data = kgs.load_all_train_data()
     for name,model in models.items():
         data = copy.deepcopy(train_data[100:103])
         for d in data:
             copy.deepcopy(d).load_to_step(5, ariel_load.default_loaders())
         model.run_in_parallel = not regenerate_reference
+        try: model.model.run_in_parallel = not regenerate_reference
+        except: pass
         model.train(data)
         data = model.infer(data)
         if regenerate_reference:

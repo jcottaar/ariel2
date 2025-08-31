@@ -1,5 +1,6 @@
 import kaggle_support as kgs
 import ariel_simple
+import ariel_gp
 from dataclasses import dataclass, field, fields
 import scipy
 import numpy as np
@@ -87,7 +88,7 @@ class Fudger(kgs.Model):
                 
         mats = kgs.data_to_mats(data,data)
         self.alter_mats(mats)
-        kgs.mats_to_data(data,data,mats)
+        kgs.mats_to_data(data,copy.deepcopy(data),mats)
             
         # for d in data:
         #     d.spectrum[0] *= self.bias_a[0]
@@ -194,11 +195,11 @@ class Fudger2(kgs.Model):
         mats = kgs.data_to_mats(data,data)
         if not self._disable_transforms:
             self.alter_mats(mats)
-        kgs.mats_to_data(data,data,mats)
+        kgs.mats_to_data(data,copy.deepcopy(data),mats)
             
         return data
 
 def baseline_model():
-    model = Fudger(model=ariel_simple.SimpleModel())
+    model = Fudger2(model=ariel_gp.PredictionModel())
     model.model.run_in_parallel = True
     return model

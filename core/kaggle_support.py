@@ -725,9 +725,12 @@ def data_to_mats(data, reference_data):
 
 def mats_to_data(data, reference_data, mats):
     y_true,y_pred,cov_pred = mats
-    for d, yp, covp in zip(data,y_pred,cov_pred):
+    for d, rd, yt, yp, covp in zip(data,reference_data,y_true,y_pred,cov_pred):
+        
+        rd.spectrum = yt.get()
         d.spectrum = yp.get()
         d.spectrum_cov = covp.get()
+        
     
     if debugging_mode>=2:
         mats_test = data_to_mats(data, reference_data)
