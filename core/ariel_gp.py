@@ -279,6 +279,7 @@ def define_prior(obs, model_options, data):
     # Transit window: use the ingress and egress times estimates during preprocessing 
     model.m['signal'].m['main'].m['transit'].transit_params = [data.diagnostics['transit_params']]
 
+    model.force_cache_observation_relationship = True
     model_uninitialized = copy.deepcopy(model)
     model.initialize(obs) # inform the models about the observable, so they can for example figure out how many parameters they have and initialize them to zero
 
@@ -664,7 +665,7 @@ class TransitModel(gp.Model):
 
     def get_observation_relationship_internal(self,obs):
         #print(self.get_parameters()[self.depth_model.number_of_parameters:])
-        prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
+        prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_prior_distribution=False)
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
         
         # Design matrix for transit depth parameters
@@ -704,7 +705,7 @@ class TransitModel(gp.Model):
         return prior_matrices
 
     def get_prior_distribution_internal(self,obs):
-        prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength) # we get both unnecessarily
+        prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_observation_relationship=False) 
         
         sigma_values = []
         transit_x0 = self.transit_params[0][0].to_x()
@@ -811,8 +812,8 @@ class ModelSplitSensors(gp.CompoundNamed):
 
     def get_observation_relationship_internal(self,obs):
         obs_AIRS, obs_FGS = self.split_obs(obs)
-        pm_AIRS = self.m['AIRS'].get_prior_matrices(obs_AIRS)
-        pm_FGS = self.m['FGS'].get_prior_matrices(obs_FGS)
+        pm_AIRS = self.m['AIRS'].get_prior_matrices(obs_AIRS, get_prior_distribution=False)
+        pm_FGS = self.m['FGS'].get_prior_matrices(obs_FGS, get_prior_distribution=False)
         prior_matrices = gp.PriorMatrices()
         
         prior_matrices.number_of_observations = pm_AIRS.number_of_observations + pm_FGS.number_of_observations
@@ -829,7 +830,7 @@ class ModelSplitSensors(gp.CompoundNamed):
     def get_prior_distribution_internal(self,obs):
         obs_AIRS, obs_FGS = self.split_obs(obs)
         assert(self.model_names == ['FGS', 'AIRS'])
-        pm = [self.models[0].get_prior_matrices(obs_FGS), self.models[1].get_prior_matrices(obs_AIRS)]
+        pm = [self.models[0].get_prior_matrices(obs_FGS, get_observation_relationship=False), self.models[1].get_prior_matrices(obs_AIRS, get_observation_relationship=False)]
         prior_matrices = gp.PriorMatrices()
         
         prior_matrices.number_of_observations = pm[0].number_of_observations + pm[1].number_of_observations

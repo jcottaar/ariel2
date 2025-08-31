@@ -114,6 +114,7 @@ class Model(kgs.BaseClass):
 
     scaling_factor = 1. # Rows and columns of prior distribution matrix will be multiplied by this
     update_scaling = False # Should we use scaling_factor as a hyperparameter to tune?
+    force_cache_observation_relationship = False # Cache even if we're not linear?
 
     initialized = False # keep track of state, run initialize() to set to True
 
@@ -165,24 +166,36 @@ class Model(kgs.BaseClass):
         assert result.shape == (self.number_of_parameters, self.number_of_instances)
         return result
  
-    def get_prior_matrices(self, obs):
+    def get_prior_matrices(self, obs, get_prior_distribution=True, get_observation_relationship=True):
         # Get the distribution in matrix form
         assert self.number_of_instances == 1
         assert obs.number_of_observations == self.number_of_observations
 
-        if not self.cached_prior_distribution is None:
-            prior_matrices = copy.deepcopy(self.cached_prior_distribution)
+        if get_prior_distribution:
+            if not self.cached_prior_distribution is None:
+                prior_matrices = copy.deepcopy(self.cached_prior_distribution)
+            else:
+                prior_matrices = self.get_prior_distribution_internal(obs)
+                self.cached_prior_distribution = copy.deepcopy(prior_matrices)
         else:
-            prior_matrices = self.get_prior_distribution_internal(obs)
-            self.cached_prior_distribution = copy.deepcopy(prior_matrices)
-        if not self.cached_observation_relationship is None:
-            prior_matrices_obs = copy.deepcopy(self.cached_observation_relationship)
+            prior_matrices = PriorMatrices()
+            prior_matrices.number_of_parameters = self.number_of_parameters
+            prior_matrices.prior_mean = np.zeros((prior_matrices.number_of_parameters))
+            prior_matrices.prior_precision_matrix = sparse_matrix((prior_matrices.number_of_parameters,prior_matrices.number_of_parameters))
+        if get_observation_relationship:
+            if not self.cached_observation_relationship is None:
+                prior_matrices_obs = copy.deepcopy(self.cached_observation_relationship)
+            else:
+                prior_matrices_obs = self.get_observation_relationship_internal(obs)
+                if self.is_linear() or self.force_cache_observation_relationship:
+                    self.cached_observation_relationship = copy.deepcopy(prior_matrices_obs)
+            prior_matrices.observable_offset = prior_matrices_obs.observable_offset
+            prior_matrices.design_matrix = prior_matrices_obs.design_matrix
+            prior_matrices.number_of_observations = prior_matrices_obs.number_of_observations
         else:
-            prior_matrices_obs = self.get_observation_relationship_internal(obs)
-            self.cached_observation_relationship = copy.deepcopy(prior_matrices_obs)
-        prior_matrices.observable_offset = prior_matrices_obs.observable_offset
-        prior_matrices.design_matrix = prior_matrices_obs.design_matrix
-        prior_matrices.number_of_observations = prior_matrices_obs.number_of_observations
+            prior_matrices.design_matrix = sparse_matrix((self.number_of_observations, self.number_of_parameters))
+            prior_matrices.observable_offset = np.zeros((self.number_of_observations))            
+            prior_matrices.number_of_observations = self.number_of_observations
         if not self.scaling_factor==1.:
             assert np.all(prior_matrices.prior_mean)==0 # todo
             diag_scale = sp.sparse.diags(np.zeros((self.number_of_parameters)) + 1/self.scaling_factor)
@@ -194,7 +207,7 @@ class Model(kgs.BaseClass):
         assert prior_matrices.number_of_observations == self.number_of_observations
         assert prior_matrices.number_of_parameters == self.number_of_parameters
         prior_matrices.check_constraints()
-        if kgs.debugging_mode>=2:
+        if kgs.debugging_mode>=2 and get_observation_relationship:
             # Check design matrix against get_prediction()
             pred1 = self.get_prediction_internal(obs)
             offset = np.random.default_rng(seed=0).normal(scale=1e-6*self.expected_parameter_scale,size=(self.number_of_parameters,1))
@@ -282,8 +295,9 @@ class Model(kgs.BaseClass):
     def get_partial_prior_precision_matrices(self,obs):
         # Get the derivative of the precision matrix to our hyperparameters
         if self.update_scaling:
-            self.get_prior_matrices(obs).check_constraints()
-            matrices = [self.get_prior_matrices(obs).prior_precision_matrix] 
+            prior_matrices = self.get_prior_matrices(obs, get_observation_relationship=False)
+            prior_matrices.check_constraints()
+            matrices = [prior_matrices.prior_precision_matrix] 
         else:
             matrices = self.get_partial_prior_precision_matrices_internal(obs)
         assert len(matrices) == self.number_of_hyperparameters
@@ -369,11 +383,11 @@ class Passthrough(Model):
         return self.model.get_hyperparameters()
 
     def get_observation_relationship_internal(self,obs):
-        return self.model.get_prior_matrices(obs) # we get both unnecessarily
+        return self.model.get_prior_matrices(obs, get_prior_distribution=False)
 
     def get_prior_distribution_internal(self,obs):
-        return self.model.get_prior_matrices(obs) # we get both unnecessarily
-
+        return self.model.get_prior_matrices(obs, get_observation_relationship=False) 
+    
     def get_prediction_internal(self,obs):
         return self.model.get_prediction(obs)
 
@@ -411,13 +425,13 @@ class ParameterScaler(Passthrough):
         return self.model.get_parameters()/self.scaler
 
     def get_prior_distribution_internal(self,obs):
-        prior_matrices = self.model.get_prior_matrices(obs)
+        prior_matrices = self.model.get_prior_matrices(obs, get_observation_relationship=False)
         prior_matrices.prior_mean = prior_matrices.prior_mean/self.scaler
         prior_matrices.prior_precision_matrix = prior_matrices.prior_precision_matrix*(self.scaler**2)
         return prior_matrices
 
     def get_observation_relationship_internal(self,obs):
-        prior_matrices = self.model.get_prior_matrices(obs)
+        prior_matrices = self.model.get_prior_matrices(obs, get_prior_distribution=False)
         prior_matrices.design_matrix = prior_matrices.design_matrix*self.scaler
         return prior_matrices        
 
@@ -499,10 +513,10 @@ class Sparse2D(Passthrough):
         self.transform_matrix = sparse_matrix((vals, (rows.astype(int),cols.astype(int))), shape = (obs.number_of_observations,obs_altered.number_of_observations))
  
     def get_prior_distribution_internal(self,obs):
-        return self.model.get_prior_matrices(self.alter_obs(obs)[0]) # we get both unnecessarily
+        return self.model.get_prior_matrices(self.alter_obs(obs)[0], get_observation_relationship=False) 
         
     def get_observation_relationship_internal(self,obs):
-        prior_matrices = self.model.get_prior_matrices(self.alter_obs(obs)[0]) # we get both unnecessarily
+        prior_matrices = self.model.get_prior_matrices(self.alter_obs(obs)[0], get_prior_distribution=False) 
         prior_matrices.design_matrix = self.transform_matrix @ prior_matrices.design_matrix
         prior_matrices.observable_offset = self.transform_matrix @ prior_matrices.observable_offset
         prior_matrices.number_of_observations = self.number_of_observations
@@ -582,7 +596,7 @@ class Compound(Model):
         return np.concatenate(res_per_model)
 
     def get_observation_relationship_internal(self,obs):
-        pm = [m.get_prior_matrices(obs) for m in self.models] # we get both -> rely on caching for efficiency
+        pm = [m.get_prior_matrices(obs, get_prior_distribution = False) for m in self.models] # we get both -> rely on caching for efficiency
         prior_matrices = PriorMatrices()
         
         prior_matrices.number_of_observations = pm[0].number_of_observations
@@ -611,7 +625,7 @@ class Compound(Model):
         return prior_matrices
 
     def get_prior_distribution_internal(self,obs):
-        pm = [m.get_prior_matrices(obs) for m in self.models] # we get both -> rely on caching for efficiency
+        pm = [m.get_prior_matrices(obs, get_observation_relationship=False) for m in self.models]
         prior_matrices = PriorMatrices()
         
         prior_matrices.number_of_observations = pm[0].number_of_observations
