@@ -36,6 +36,9 @@ class ModelOptions(kgs.BaseClass):
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
     transit_prior_info = 0
     FGS_AIRS_decoupling = 1
+    use_old_transit_depth_prior = True
+    transit_depth_alpha = 1. # 1 = tuned based on raw, 0 = tuned based on PCA rescaled
+    new_transit_depth_FGS_sigma_override = None
  
     # Configuration of the drift prior
     hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
@@ -191,18 +194,36 @@ def define_prior(obs, model_options, data):
     m['average'].model = gp.Uncorrelated()
     m['average'].model.features = [] # doesn't depend on features -> single offset value
     m['average'].model.sigma = 0.01 # kind of infinite
+    
     # Define the non-PCA part of the variation
-    model_AIRS = gp.ParameterScaler()
-    model_AIRS.scaler = np.sqrt(np.sum(model_options.transit_prior_info['sigmas_per_npca'][0]**2))
-    model_AIRS.model = gp.SquaredExponentialKernelMulti()
-    model_AIRS.model.features = ['wavelength']
-    model_AIRS.model.sigmas = model_options.transit_prior_info['sigmas_per_npca'][0]
-    model_AIRS.model.lengths = model_options.transit_prior_info['lengths']   
-    model_FGS = gp.ParameterScaler()
-    model_FGS.scaler = 1e-4
-    model_FGS.model = gp.Uncorrelated()
-    model_FGS.model.features = ['wavelength']
-    model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*model_options.FGS_AIRS_decoupling # effectively decouple FGS and AIRS
+    if model_options.use_old_transit_depth_prior:
+        model_AIRS = gp.ParameterScaler()
+        model_AIRS.scaler = np.sqrt(np.sum(model_options.transit_prior_info['sigmas_per_npca'][0]**2))
+        model_AIRS.model = gp.SquaredExponentialKernelMulti()
+        model_AIRS.model.features = ['wavelength']
+        model_AIRS.model.sigmas = model_options.transit_prior_info['sigmas_per_npca'][0]
+        model_AIRS.model.lengths = model_options.transit_prior_info['lengths']   
+        model_FGS = gp.ParameterScaler()
+        model_FGS.scaler = 1e-4
+        model_FGS.model = gp.Uncorrelated()
+        model_FGS.model.features = ['wavelength']
+        model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*model_options.FGS_AIRS_decoupling # effectively decouple FGS and AIRS        
+    else:
+        transit_depth_prior = kgs.dill_load(kgs.code_dir + '/transit_depth_new.pickle')
+        model_AIRS = gp.ParameterScaler()
+        model_AIRS.scaler = 1e-4
+        model_AIRS.model = transit_depth_prior[0][1]
+        model_AIRS.model.hyperparameters = model_options.transit_depth_alpha * transit_depth_prior[0][1].hyperparameters + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][1].hyperparameters
+        model_AIRS.model.features = ['wavelength']
+        model_FGS = gp.ParameterScaler()
+        model_FGS.scaler = 1e-4
+        model_FGS.model = gp.Uncorrelated()
+        model_FGS.model.features = ['wavelength']
+        model_FGS.model.sigma = (model_options.transit_depth_alpha * transit_depth_prior[0][0] + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][0]).item()
+        if not model_options.new_transit_depth_FGS_sigma_override is None:
+            model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
+        model_FGS.model.sigma *= model_options.FGS_AIRS_decoupling
+   
     model_variation_non_pca = ModelSplitSensors()
     mm = dict()
     mm['FGS'] = model_FGS
@@ -663,13 +684,18 @@ class TransitModel(gp.Model):
     def get_hyperparameters_internal(self):
         return self.depth_model.get_hyperparameters()
 
+    
     def get_observation_relationship_internal(self,obs):
         #print(self.get_parameters()[self.depth_model.number_of_parameters:])
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_prior_distribution=False)
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
         
         # Design matrix for transit depth parameters
-        design_matrix_rp = np.zeros((self.number_of_observations, len(self.wavelengths)))
+        #design_matrix_rp = np.zeros((self.number_of_observations, len(self.wavelengths)))
+        #print(design_matrix_rp.shape)
+        rows = []
+        cols = []
+        vals = []
         for i_wavelength in range(len(self.wavelengths)):
             this_transit_params = copy.deepcopy(self.transit_params[0][self.is_AIRS[i_wavelength]])
             this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, 0])
@@ -678,9 +704,15 @@ class TransitModel(gp.Model):
                     #pass
                     this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-np.mean(self.wavelengths[self.is_AIRS[i_wavelength]]))*self.AIRS_u_slopes[0][ii]
             derivatives = this_transit_params.light_curve_derivatives(self.times_per_wavelength[i_wavelength], [self.Rp_parameter])
-            design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = derivatives[0] * d_msqrtabs(transit_depths[i_wavelength, 0])
+            vals.append(derivatives[0] * d_msqrtabs(transit_depths[i_wavelength, 0]))
+            rows.append(self.inds_per_wavelength[i_wavelength])
+            cols.append([i_wavelength]*len(vals[-1]))
+            #print(val.shape)                                            
+            #design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = val
             this_transit_params.Rp = None
-        design_matrix_rp = gp.sparse_matrix(design_matrix_rp) @ prior_matrices.design_matrix
+        design_matrix_rp = gp.sparse_matrix( (np.concatenate(vals), (np.concatenate(rows),np.concatenate(cols))), (self.number_of_observations, len(self.wavelengths)) )
+        #design_matrix_rp = gp.sparse_matrix(design_matrix_rp) 
+        design_matrix_rp = design_matrix_rp @ prior_matrices.design_matrix
 
         
         # Design matrix for other parameters
@@ -727,20 +759,23 @@ class TransitModel(gp.Model):
         prior_matrices.number_of_parameters = self.number_of_parameters
         return prior_matrices
 
+    @kgs.profile_each_line
     def get_prediction_internal(self,obs):
         output = np.zeros((self.number_of_observations, self.number_of_instances))        
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
-        
+        mean_wavelength = np.mean(self.wavelengths) # should be taking mean over AIRS wavelengths only
         for i_instance in range(self.number_of_instances):
             for i_wavelength in range(len(self.wavelengths)):
-                this_transit_params = copy.deepcopy(self.transit_params[i_instance][self.is_AIRS[i_wavelength]])
+                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength]]
                 this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
+                old_u = copy.deepcopy(this_transit_params.u)
                 if self.fit_slopes and self.is_AIRS[i_wavelength]:
                     for ii in range(len(this_transit_params.u)):
-                        this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-np.mean(self.wavelengths[self.is_AIRS[i_wavelength]]))*self.AIRS_u_slopes[i_instance][ii]
+                        this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-mean_wavelength)*self.AIRS_u_slopes[i_instance][ii]
                 light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
                 output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
                 this_transit_params.Rp = None
+                this_transit_params.u = old_u
             
         return output
 

@@ -68,7 +68,7 @@ os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
-n_workers = 3
+n_workers = 3 if env=='kaggle' else 6
 def recommend_n_workers():
     return n_workers
 n_threads = 1
