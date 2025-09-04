@@ -524,6 +524,8 @@ class TransitLoader(BaseClass):
     apply_time_binning: BaseClass = field(init=True, default=None) # must be callable
     apply_wavelength_binning: BaseClass = field(init=True, default=None) # must be callable
     
+    noise_scaling = 1. # for testing
+    
     def progress_one_step(self, data, planet, observation_number):
         match data.loading_step:
             case 0:
@@ -536,6 +538,7 @@ class TransitLoader(BaseClass):
                 self.apply_full_sensor_corrections(data, planet, observation_number)            
             case 4:
                 self.apply_wavelength_binning(data, planet, observation_number)
+                data.noise_est *= self.noise_scaling
             case _:
                 raise Exception('Wrong state')
         data.loading_step+=1

@@ -36,9 +36,9 @@ class ModelOptions(kgs.BaseClass):
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
     transit_prior_info = 0
     FGS_AIRS_decoupling = 1
-    use_old_transit_depth_prior = True
+    use_old_transit_depth_prior = False
     transit_depth_alpha = 1. # 1 = tuned based on raw, 0 = tuned based on PCA rescaled
-    new_transit_depth_FGS_sigma_override = None
+    new_transit_depth_FGS_sigma_override = 0.0001
  
     # Configuration of the drift prior
     hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
@@ -56,6 +56,11 @@ class ModelOptions(kgs.BaseClass):
     
     # Diagnostics
     make_noise_consistent = False
+    FGS_noise_scaling = 1
+    AIRS_noise_scaling = 1
+    
+    # temp
+    FGS_transit_override = None
     
     def __post_init__(self):
         super().__post_init__()
@@ -262,7 +267,7 @@ def define_prior(obs, model_options, data):
     noise_model.model.features_hyper = 1 # indicates that hyperparameters (i.e. noise magnitudes) depend on wavelength
     noise_model.model.check_for_uniqueness = False # speeds things up
     noise_model.model.use_as_noise_matrix = True # indicates that this behaves as noise (solver needs this information)
-    noise_model.model.sigma_varying = np.concatenate((data.transits[0].data[0].noise_est.get(), data.transits[0].data[1].noise_est.get())) # set sigma values
+    noise_model.model.sigma_varying = np.concatenate((data.transits[0].data[0].noise_est.get()*model_options.FGS_noise_scaling, data.transits[0].data[1].noise_est.get()*model_options.AIRS_noise_scaling)) # set sigma values
 
     
     ### Combine everything
@@ -299,6 +304,9 @@ def define_prior(obs, model_options, data):
     
     # Transit window: use the ingress and egress times estimates during preprocessing 
     model.m['signal'].m['main'].m['transit'].transit_params = [data.diagnostics['transit_params']]
+    if not model_options.FGS_transit_override is None:
+        model.m['signal'].m['main'].m['transit'].transit_params[0][0].limb_dark = model_options.FGS_transit_override[0]
+        model.m['signal'].m['main'].m['transit'].transit_params[0][0].u = 0.1*np.ones(model_options.FGS_transit_override[1])
 
     model.force_cache_observation_relationship = True
     model_uninitialized = copy.deepcopy(model)
@@ -336,6 +344,7 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
     # Get our data into the right form for gp.py
     obs = Observable()
     obs.import_from_loaded_data(data)
+    
 
     # Define the prior
     prior_model, model_uninitialized = define_prior(obs, model_options, data)    
@@ -567,7 +576,7 @@ class TransitModel(gp.Model):
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [0,1,2,3] 
-        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1.]        
+        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1., 1., 1.]        
         self.AIRS_u_slopes = [[0,0]]
         self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
