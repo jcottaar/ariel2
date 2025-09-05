@@ -61,6 +61,8 @@ class ModelOptions(kgs.BaseClass):
     
     # temp
     FGS_transit_override = None
+    AIRS_transit_override = None
+    supersample_override = [None,None]
     
     def __post_init__(self):
         super().__post_init__()
@@ -307,6 +309,13 @@ def define_prior(obs, model_options, data):
     if not model_options.FGS_transit_override is None:
         model.m['signal'].m['main'].m['transit'].transit_params[0][0].limb_dark = model_options.FGS_transit_override[0]
         model.m['signal'].m['main'].m['transit'].transit_params[0][0].u = 0.1*np.ones(model_options.FGS_transit_override[1])
+    if not model_options.AIRS_transit_override is None:
+        model.m['signal'].m['main'].m['transit'].transit_params[0][1].limb_dark = model_options.AIRS_transit_override[0]
+        model.m['signal'].m['main'].m['transit'].transit_params[0][1].u = 0.1*np.ones(model_options.AIRS_transit_override[1])
+        model.m['signal'].m['main'].m['transit'].AIRS_u_slopes = [[0]*model_options.AIRS_transit_override[1]]
+    for ii in range(2):
+        if not model_options.supersample_override[ii] is None:
+            model.m['signal'].m['main'].m['transit'].transit_params[0][ii].supersample_factor = model_options.supersample_override[ii]
 
     model.force_cache_observation_relationship = True
     model_uninitialized = copy.deepcopy(model)
@@ -578,7 +587,7 @@ class TransitModel(gp.Model):
         self.common_parameters = [0,1,2,3] 
         self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1., 1., 1.]        
         self.AIRS_u_slopes = [[0,0]]
-        self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
+        #self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
     
     def _check_constraints(self):
@@ -615,7 +624,7 @@ class TransitModel(gp.Model):
         self.obs_wavelength.labels = np.zeros((len(self.wavelengths),1))
         
         self.depth_model.initialize(self.obs_wavelength, number_of_instances)
-        self.number_of_extra_parameters = 2*len(self.transit_params[0][0].to_x()) - 2 - len(self.common_parameters) + 2*self.fit_slopes
+        self.number_of_extra_parameters = len(self.transit_params[0][0].to_x()) + len(self.transit_params[0][1].to_x()) - 2 - len(self.common_parameters) + len(self.transit_params[0][1].u)*self.fit_slopes
         self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
@@ -631,17 +640,18 @@ class TransitModel(gp.Model):
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
         if self.fit_slopes:
             self.AIRS_u_slopes = [copy.deepcopy(self.AIRS_u_slopes[0]) for _ in range(self.number_of_instances)]
-        
   
         # Loop over each instance and rebuild transit_params
-        n_params = len(self.transit_params[0][0].to_x())
+        n_params1 = len(self.transit_params[0][0].to_x())
+        n_params2 = len(self.transit_params[0][1].to_x())
+        n_params = max(n_params1, n_params2)
         for i_instance in range(self.number_of_instances):
             cur_pos = self.depth_model.number_of_parameters
             # Get the length of a transit_x vector by using the first one as template
             self.transit_params[i_instance][0] = copy.deepcopy(self.transit_params[0][0])
-            self.transit_params[i_instance][1] = copy.deepcopy(self.transit_params[0][0])            
-            transit_x0 = np.zeros(n_params)
-            transit_x1 = np.zeros(n_params)
+            self.transit_params[i_instance][1] = copy.deepcopy(self.transit_params[0][1]) 
+            transit_x0 = np.zeros(n_params1)
+            transit_x1 = np.zeros(n_params2)
 
             for i_param in range(n_params):
                 if i_param in self.common_parameters:
@@ -651,10 +661,12 @@ class TransitModel(gp.Model):
                     cur_pos += 1
                 elif i_param != self.Rp_parameter:
                     # Distinct parameters for 0 and 1
-                    transit_x0[i_param] = to_what[cur_pos, i_instance]
-                    cur_pos += 1
-                    transit_x1[i_param] = to_what[cur_pos, i_instance]
-                    cur_pos += 1
+                    if i_param<n_params1:
+                        transit_x0[i_param] = to_what[cur_pos, i_instance]
+                        cur_pos += 1
+                    if i_param<n_params2:
+                        transit_x1[i_param] = to_what[cur_pos, i_instance]
+                        cur_pos += 1
 
             # Update transit_params from x
             self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None;
@@ -663,7 +675,7 @@ class TransitModel(gp.Model):
             if self.fit_slopes:                
                 self.AIRS_u_slopes[i_instance] = list(to_what[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]), i_instance])
                 cur_pos += len(self.AIRS_u_slopes[0])
-
+            
             assert cur_pos == self.number_of_parameters
         
     def get_parameters_internal(self):
@@ -673,13 +685,18 @@ class TransitModel(gp.Model):
             cur_pos = self.depth_model.number_of_parameters
             transit_x0 = self.transit_params[i_instance][0].to_x()
             transit_x1 = self.transit_params[i_instance][1].to_x()
-            for i_param in range(len(transit_x0)):
+            n_params1 = len(self.transit_params[0][0].to_x())
+            n_params2 = len(self.transit_params[0][1].to_x())
+            n_params = max(n_params1, n_params2)
+            for i_param in range(n_params):
                 if i_param in self.common_parameters:
                     x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
                     assert(transit_x1[i_param]==transit_x0[i_param])
                 elif not i_param == self.Rp_parameter:
-                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
-                    x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
+                    if i_param<n_params1:
+                        x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;                        
+                    if i_param<n_params2:
+                        x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
             if self.fit_slopes:
                 x[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]),i_instance] = self.AIRS_u_slopes[i_instance]
                 cur_pos+=len(self.AIRS_u_slopes[0])
@@ -750,12 +767,17 @@ class TransitModel(gp.Model):
         
         sigma_values = []
         transit_x0 = self.transit_params[0][0].to_x()
-        for i_param in range(len(transit_x0)):
+        n_params1 = len(self.transit_params[0][0].to_x())
+        n_params2 = len(self.transit_params[0][1].to_x())
+        n_params = max(n_params1, n_params2)
+        for i_param in range(n_params):
             if i_param in self.common_parameters:
                 sigma_values.append(self.std_values[i_param])
             elif not i_param == self.Rp_parameter:
-                sigma_values.append(self.std_values[i_param])
-                sigma_values.append(self.std_values[i_param])
+                if i_param<n_params1:
+                    sigma_values.append(self.std_values[i_param])
+                if i_param<n_params2:
+                    sigma_values.append(self.std_values[i_param])
         if self.fit_slopes:
             for ii in range(len(self.AIRS_u_slopes[0])):
                 sigma_values.append(self.std_values[-1])

@@ -197,17 +197,21 @@ class SimpleModel(kgs.Model):
             # sanity checks: t0, ecc, noise ratio
             kgs.sanity_check(lambda x:x, self.transit_param[0].t0, 'simple_t0', 11, [2.5, 5])
             #kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 12, [-0.25,0.25])
+            print('sanity back')
             for ii in range(2):
                 #noise_estimate = ariel_numerics.estimate_noise(self._targets[ii])
                 residual = kgs.rms(self._targets[ii]-self.pred[ii])
                 residual_filtered = ariel_numerics.estimate_noise(self._targets[ii]-self.pred[ii])
-                ratio = residual-residual_filtered
+                ratio = residual/residual_filtered
                 if ii==0:
                     data.diagnostics['simple_residual_diff_FGS'] = ratio
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-1e-4, 1.2e-4])
+                    #print('FGS', ratio, residual/residual_filtered)
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-1,3])
                 else:
                     data.diagnostics['simple_residual_diff_AIRS'] = ratio
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-1e-4, 15e-5]) # up to ~3e-5 in training, but up to ~12e-5 in test
+                    #print('AIRS', ratio, residual/residual_filtered)
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-1,3]) # up to ~3e-5 in training, but up to ~12e-5 in test
+            #print(self.transit_param)
 
 
             # Report resutls

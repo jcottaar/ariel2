@@ -39,11 +39,13 @@ class ApplyWavelengthBinningFGS2(kgs.BaseClass):
     def __call__(self, data, planet, observation_number):
         coeffs = get_coeffs(data.data, n_mean_pixels=self.n_mean_pixels)[0]
         res = cp.sum(FGS_weights*coeffs,0).reshape(-1,1)
-        planet.transits[observation_number].diagnostics['FGS_jitter']=coeffs[3,:].get()
+        #planet.transits[observation_number].diagnostics['FGS_jitter']=coeffs[3,:].get()
         if diagnostic_plots:
             plt.figure()
-            plt.plot(coeffs[3,:].get())
+            plt.plot(data.times.get()/3600,coeffs[3,:].get())
             plt.pause(0.001)
+            #print('c', coeffs[3,0])
+            #print('r', res.flatten()[0])
         data.data = res
         data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
 

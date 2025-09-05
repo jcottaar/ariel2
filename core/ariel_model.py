@@ -248,13 +248,13 @@ class Fudger3(kgs.Model):
         self._disable_transforms = True
         inferred_data = self.infer(train_data)
         self._disable_transforms = False
-        self._var_values = cp.array([cp.std(d.spectrum) for d in inferred_data])
-        print(self._var_values)
-        print(cp.array([np.std(d.diagnostics['training_spectrum']) for d in inferred_data]))
-        import matplotlib.pyplot as plt
-        plt.figure()
-        plt.scatter(self._var_values.get(), cp.array([np.std(d.diagnostics['training_spectrum']) for d in inferred_data]).get())
-        plt.axline((0,0), slope=1, color='black')
+        
+        # print(self._var_values)
+        # print(cp.array([np.std(d.diagnostics['training_spectrum']) for d in inferred_data]))
+        # import matplotlib.pyplot as plt
+        # plt.figure()
+        # plt.scatter(self._var_values.get(), cp.array([np.std(d.diagnostics['training_spectrum']) for d in inferred_data]).get())
+        # plt.axline((0,0), slope=1, color='black')
         #print(kgs.score_metric(inferred_data,train_data))
         mats = kgs.data_to_mats(inferred_data,train_data)
         
@@ -278,7 +278,6 @@ class Fudger3(kgs.Model):
         
     
     def _infer(self,data):
-        print('FIX TRAIN SCALING!')
         if not self._cached_planet_id is None and [d.planet_id for d in data]==self._cached_planet_id:
             data = copy.deepcopy(self._cached_result)
         else:
@@ -286,7 +285,8 @@ class Fudger3(kgs.Model):
             if self._cached_planet_id is None:
                 self._cached_result = copy.deepcopy(data)
                 self._cached_planet_id = [d.planet_id for d in data]
-                
+        
+        self._var_values = cp.array([cp.std(d.spectrum) for d in data])
         mats = kgs.data_to_mats(data,data)
         if not self._disable_transforms:
             self.alter_mats(mats)
@@ -294,8 +294,93 @@ class Fudger3(kgs.Model):
             
         return data
 
+@dataclass
+class MultiTransit(kgs.Model):
+    
+    model: kgs.Model = field(init=True, default=None)
+    
+    
+    def _convert_data(self, data):
+        data_run = []
+        for d in data:
+            if len(d.transits)==1:
+                data_run.append(d)
+            else:
+                dd = copy.deepcopy(d)
+                dd.transits = dd.transits[:1]
+                data_run.append(dd)
+                dd = copy.deepcopy(d)
+                dd.transits = dd.transits[1:]
+                data_run.append(dd)
+        return data_run
+        
+    def _train(self,train_data):
+        self.model.train(self._convert_data(train_data))
+        self.state=1
+        
+    
+    def _infer(self,data):        
+        
+        data_run = self._convert_data(data)
+        
+        data_run = self.model.infer(data_run)
+        
+        planet_ids_orig = np.array([d.planet_id for d in data])
+        planet_ids_run = np.array([d.planet_id for d in data_run])
+        data_output = []
+        for d in data:
+            if len(d.transits)==1:
+                ind = np.argwhere(d.planet_id == planet_ids_run)
+                assert(len(ind)==1)
+                data_output.append(data_run[ind[0][0]])
+            else:
+                ind = np.argwhere(d.planet_id == planet_ids_run)    
+                assert(len(ind)==2)
+                this_data1 = data_run[ind[0][0]]
+                this_data2 = data_run[ind[1][0]]
+                #this_data1.spectrum, this_data1.spectrum_cov = combine_measurements(this_data1.spectrum, this_data1.spectrum_cov, this_data2.spectrum, this_data2.spectrum_cov)                
+                this_data1.spectrum = this_data1.spectrum/2 + this_data2.spectrum/2
+                this_data1.spectrum_cov = this_data1.spectrum_cov/4 + this_data2.spectrum_cov/4
+                data_output.append(this_data1)
+                
+        return data_output
+
 
 def baseline_model():
     model = Fudger2(model=ariel_gp.PredictionModel())
     model.model.run_in_parallel = True
     return model
+
+
+def combine_measurements(mu1, cov1, mu2, cov2):
+    """
+    Combine two independent Gaussian measurements of the same latent variable.
+
+    Parameters
+    ----------
+    mu1, mu2 : (n,) cp.ndarray
+        Mean vectors of the two measurements.
+    cov1, cov2 : (n,n) cp.ndarray
+        Covariance matrices of the two measurements.
+
+    Returns
+    -------
+    mu : (n,) cp.ndarray
+        Combined mean.
+    cov : (n,n) cp.ndarray
+        Combined covariance.
+    """
+    
+    print(np.linalg.cond(cov1))
+    print(np.linalg.cond(cov2))
+    # precision matrices
+    prec1 = np.linalg.inv(cov1)
+    prec2 = np.linalg.inv(cov2)
+
+    # combined covariance
+    cov = np.linalg.inv(prec1 + prec2)
+
+    # combined mean
+    mu = cov @ (prec1 @ mu1 + prec2 @ mu2)
+
+    return mu, cov
