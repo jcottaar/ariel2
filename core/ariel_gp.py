@@ -306,6 +306,7 @@ def define_prior(obs, model_options, data):
     
     # Transit window: use the ingress and egress times estimates during preprocessing 
     model.m['signal'].m['main'].m['transit'].transit_params = [data.diagnostics['transit_params']]
+    model.m['signal'].m['main'].m['transit'].transit_params[0][0].t0 = model.m['signal'].m['main'].m['transit'].transit_params[0][1].t0
     if not model_options.FGS_transit_override is None:
         model.m['signal'].m['main'].m['transit'].transit_params[0][0].limb_dark = model_options.FGS_transit_override[0]
         model.m['signal'].m['main'].m['transit'].transit_params[0][0].u = 0.1*np.ones(model_options.FGS_transit_override[1])
@@ -483,6 +484,7 @@ class PredictionModel(kgs.Model):
 
         test_data.spectrum = copy.deepcopy(pred)
         test_data.spectrum_cov = copy.deepcopy(cov)
+        test_data.diagnostics['t0_diff'] = results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].t0 - results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].t0
         try:
             test_data.diagnostics['transit_scaler'] = results['model_mean'].m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor 
         except:

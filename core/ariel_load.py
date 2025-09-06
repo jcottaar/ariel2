@@ -255,8 +255,9 @@ class ApplyPixelCorrections(kgs.BaseClass):
     dark_current = True
     flat_field = True
     remove_cosmic_rays = True
+    new_cosmic_ray_removal = False
     cosmic_ray_threshold = 20
-    remove_first_and_last_frame = False
+    remove_last_frame = False
     
     adc_offset_sign = 1 
     dark_current_sign = 1
@@ -341,8 +342,16 @@ class ApplyPixelCorrections(kgs.BaseClass):
             #is_cosmic_ray[0,...] = diff[0,...]>self.cosmic_ray_threshold
             #is_cosmic_ray[-1,...] = diff[-1,...]>self.cosmic_ray_threshold
             #is_cosmic_ray[1:-1,...] = ( (diff[1:,...]>self.cosmic_ray_threshold) & (diff[:-1,...]>self.cosmic_ray_threshold))
-            is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold
+            if self.new_cosmic_ray_removal:
+                signal_noise = ariel_numerics.remove_trend_cp(signal)
+                #plt.figure()
+                #plt.plot(signal_noise.reshape(signal_noise.shape[0],-1).get())
+                #plt.title(cp.std(signal_noise,0))
+                is_cosmic_ray = cp.abs(signal_noise - cp.mean(signal_noise,0))/cp.std(signal_noise,0) > self.cosmic_ray_threshold
+            else:
+                is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold            
             kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,5e-6])
+            #print(cp.max(cp.mean(is_cosmic_ray)))
             signal[is_cosmic_ray] = cp.nan
             return signal
             
@@ -404,10 +413,10 @@ class ApplyPixelCorrections(kgs.BaseClass):
             data.data = cp.ascontiguousarray(data.data)
             data.wavelengths = cp.flip(data.wavelengths)
             
-        if self.remove_first_and_last_frame:
-            data.data = data.data[1:-1,...]
-            data.times = data.times[1:-1]
-            data.time_intervals = data.time_intervals[1:-1]
+        if self.remove_last_frame:
+            data.data = data.data[:-1,...]
+            data.times = data.times[:-1]
+            data.time_intervals = data.time_intervals[:-1]
             
         if self.poke_holes:
             if data.is_FGS:
@@ -539,12 +548,24 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
 @dataclass
 class ApplyTimeBinning(kgs.BaseClass):
     
+    add_last_frame = False
     time_binning = 3
     
     def __call__(self, data, planet, observation_number):
-        data.data = bin_first_axis(data.data, self.time_binning)
-        data.times = bin_first_axis(data.times, self.time_binning)
-        data.time_intervals = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
+        data_new = bin_first_axis(data.data, self.time_binning)
+        times_new = bin_first_axis(data.times, self.time_binning)
+        time_intervals_new = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
+        # Add the last frame
+        if self.add_last_frame:
+            ind_done = data_new.shape[0]*self.time_binning
+            if ind_done < data.data.shape[0]:
+                data_new = cp.concatenate((data_new, cp.mean(data.data[ind_done:data.data.shape[0],...],0)[None,...]))
+                times_new = cp.concatenate((times_new, cp.mean(data.times[ind_done:data.data.shape[0]])[None]))
+                time_intervals_new =  cp.concatenate((time_intervals_new, (data.time_intervals[0]*(data.data.shape[0]-ind_done))[None]))
+        data.data = data_new
+        data.times = times_new
+        data.time_intervals = time_intervals_new
+                
         
         
 @dataclass        

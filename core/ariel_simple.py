@@ -34,6 +34,8 @@ class SimpleModel(kgs.Model):
     do_step2 = True
     weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     order_list: list = field(init=True, default_factory=lambda:[0,1,2,3]) 
+    unlock_t0: bool = field(init=True, default=False)
+    new_solver: bool = field(init=True, default=False)
     
     # internal
     _targets = None # FGS, AIRS
@@ -54,7 +56,10 @@ class SimpleModel(kgs.Model):
     
     def _to_x(self):
         x = self.transit_param[0].to_x() + self.transit_param[1].to_x()[4:] + list(self.poly_vals[0]) + list(self.poly_vals[1])
-        assert self.transit_param[1].to_x()[:4]==x[:4]
+        if self.unlock_t0:
+            x.append(self.transit_param[1].t0)
+        else:
+            assert self.transit_param[1].to_x()[:4]==x[:4]
         return list(x)
     
     def _from_x(self, x):
@@ -67,6 +72,9 @@ class SimpleModel(kgs.Model):
             for jj in range(len(self.poly_vals[ii])):
                 self.poly_vals[ii][jj] = x[cur_ind]
                 cur_ind+=1
+        if self.unlock_t0:
+            self.transit_param[1].t0 = x[cur_ind];cur_ind+=1;
+        assert(cur_ind == len(x))
         if kgs.debugging_mode>=2:
             assert np.all( np.abs(np.array(self._to_x())-np.array(x))<=1e-10 )
             
@@ -151,27 +159,60 @@ class SimpleModel(kgs.Model):
             step1=[]
             for ii in range(2):
                 step1.append(self._light_curve(ii))
-
             # Step 2
-            def cost(x, do_plot = False):
-                self._from_x(x)
-                cost = 0
-                self.pred = [None]*2
-                for ii in range(2):
-                    self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                    cost += self.weights[ii]*np.sqrt(np.mean( (self.pred[ii]-self._targets[ii])**2 ))
-                return cost
-            self.cost_list=[]
-            for o in self.order_list:
-                self.poly_order = o#self.poly_order_step2
-                for ii in range(2):
-                    new_vals = np.zeros(self.poly_order+1)
-                    inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
-                    new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
-                    self.poly_vals[ii] = new_vals
-                x0 = self._to_x()  
-                res = scipy.optimize.minimize(cost,x0)
-                self.cost_list.append(cost(res.x))
+            if self.new_solver:
+                def residual(x):
+                    self._from_x(x)
+                    cost = 0
+                    self.pred = [None]*2
+                    residual = []
+                    for ii in range(2):
+                        self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
+                        residual.append(self.pred[ii]-self._targets[ii])
+                    residual = np.concatenate(residual).flatten()
+                    return residual
+                def cost(x):
+                    return kgs.rms(residual(x))
+                for o in self.order_list:
+                    self.poly_order = o
+                    for ii in range(2):
+                        new_vals = np.zeros(self.poly_order+1)
+                        inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
+                        new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
+                        self.poly_vals[ii] = new_vals
+                    x0 = self._to_x()  
+                    #res = scipy.optimize.minimize(cost,x0)
+                    res = scipy.optimize.least_squares(
+                        fun=residual,
+                        x0=x0,
+                        #bounds=(lb, ub),
+                        method="trf",
+                        loss="soft_l1",      # or "huber"
+                        #f_scale=2.0,         # tunes outlier influence
+                        #max_nfev=2000
+                    )
+                #self.cost_list.append(cost(res.x))
+                self.cost_list = [0]*len(self.order_list)
+            else:
+                def cost(x, do_plot = False):
+                    self._from_x(x)
+                    cost = 0
+                    self.pred = [None]*2
+                    for ii in range(2):
+                        self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
+                        cost += self.weights[ii]*np.sqrt(np.mean( (self.pred[ii]-self._targets[ii])**2 ))
+                    return cost
+                self.cost_list=[]
+                for o in self.order_list:
+                    self.poly_order = o#self.poly_order_step2
+                    for ii in range(2):
+                        new_vals = np.zeros(self.poly_order+1)
+                        inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
+                        new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
+                        self.poly_vals[ii] = new_vals
+                    x0 = self._to_x()  
+                    res = scipy.optimize.minimize(cost,x0)
+                    self.cost_list.append(cost(res.x))
 
 
             if self.do_plots:            
@@ -195,9 +236,9 @@ class SimpleModel(kgs.Model):
                 plt.pause(0.001)
             
             # sanity checks: t0, ecc, noise ratio
-            kgs.sanity_check(lambda x:x, self.transit_param[0].t0, 'simple_t0', 11, [2.5, 5])
+            kgs.sanity_check(lambda x:x, self.transit_param[0].t0, 'simple_t0', 11, [2.9, 4.6])
             #kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 12, [-0.25,0.25])
-            print('sanity back')
+            #print('sanity back')
             for ii in range(2):
                 #noise_estimate = ariel_numerics.estimate_noise(self._targets[ii])
                 residual = kgs.rms(self._targets[ii]-self.pred[ii])
@@ -206,11 +247,11 @@ class SimpleModel(kgs.Model):
                 if ii==0:
                     data.diagnostics['simple_residual_diff_FGS'] = ratio
                     #print('FGS', ratio, residual/residual_filtered)
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [-1,3])
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [0.9,1.1])
                 else:
                     data.diagnostics['simple_residual_diff_AIRS'] = ratio
                     #print('AIRS', ratio, residual/residual_filtered)
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [-1,3]) # up to ~3e-5 in training, but up to ~12e-5 in test
+                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [0.9,1.1]) # up to ~3e-5 in training, but up to ~12e-5 in test
             #print(self.transit_param)
 
 
