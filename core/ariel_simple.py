@@ -57,7 +57,7 @@ class SimpleModel(kgs.Model):
     def _to_x(self):
         x = self.transit_param[0].to_x() + self.transit_param[1].to_x()[4:] + list(self.poly_vals[0]) + list(self.poly_vals[1])
         if self.unlock_t0:
-            x.append(self.transit_param[1].t0)
+            x.append(self.transit_param[1].t0 - self.transit_param[0].t0)
         else:
             assert self.transit_param[1].to_x()[:4]==x[:4]
         return list(x)
@@ -73,7 +73,7 @@ class SimpleModel(kgs.Model):
                 self.poly_vals[ii][jj] = x[cur_ind]
                 cur_ind+=1
         if self.unlock_t0:
-            self.transit_param[1].t0 = x[cur_ind];cur_ind+=1;
+            self.transit_param[1].t0 = self.transit_param[0].t0 + x[cur_ind];cur_ind+=1;
         assert(cur_ind == len(x))
         if kgs.debugging_mode>=2:
             assert np.all( np.abs(np.array(self._to_x())-np.array(x))<=1e-10 )
@@ -161,6 +161,7 @@ class SimpleModel(kgs.Model):
                 step1.append(self._light_curve(ii))
             # Step 2
             if self.new_solver:
+                assert self.unlock_t0
                 def residual(x):
                     self._from_x(x)
                     cost = 0
@@ -173,6 +174,7 @@ class SimpleModel(kgs.Model):
                     return residual
                 def cost(x):
                     return kgs.rms(residual(x))
+                self.cost_list=[]
                 for o in self.order_list:
                     self.poly_order = o
                     for ii in range(2):
@@ -182,17 +184,26 @@ class SimpleModel(kgs.Model):
                         self.poly_vals[ii] = new_vals
                     x0 = self._to_x()  
                     #res = scipy.optimize.minimize(cost,x0)
+                    lb = -np.inf*np.ones(len(x0))
+                    ub = np.inf*np.ones(len(x0))
+                    lb[-1] = -0.1-0.001*o
+                    ub[-1] = 0.1+0.001*o
+                    lb[1]=-10
+                    lb[2]=-10
+                    ub[1]=10
+                    ub[2]=10
                     res = scipy.optimize.least_squares(
                         fun=residual,
                         x0=x0,
-                        #bounds=(lb, ub),
+                        bounds=(lb, ub),
                         method="trf",
                         loss="soft_l1",      # or "huber"
                         #f_scale=2.0,         # tunes outlier influence
                         #max_nfev=2000
                     )
-                #self.cost_list.append(cost(res.x))
-                self.cost_list = [0]*len(self.order_list)
+                    self.cost_list.append(cost(res.x))
+                #print(res.x)
+                
             else:
                 def cost(x, do_plot = False):
                     self._from_x(x)
@@ -211,7 +222,7 @@ class SimpleModel(kgs.Model):
                         new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
                         self.poly_vals[ii] = new_vals
                     x0 = self._to_x()  
-                    res = scipy.optimize.minimize(cost,x0)
+                    res = scipy.optimize.minimize(cost,x0)                    
                     self.cost_list.append(cost(res.x))
 
 
@@ -236,7 +247,7 @@ class SimpleModel(kgs.Model):
                 plt.pause(0.001)
             
             # sanity checks: t0, ecc, noise ratio
-            kgs.sanity_check(lambda x:x, self.transit_param[0].t0, 'simple_t0', 11, [2.9, 4.6])
+            
             #kgs.sanity_check(lambda x:x, self.ecc, 'simple_ecc', 12, [-0.25,0.25])
             #print('sanity back')
             for ii in range(2):
@@ -247,11 +258,11 @@ class SimpleModel(kgs.Model):
                 if ii==0:
                     data.diagnostics['simple_residual_diff_FGS'] = ratio
                     #print('FGS', ratio, residual/residual_filtered)
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [0.9,1.1])
+                    #kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_FGS', 12, [0.9,1.3])
                 else:
                     data.diagnostics['simple_residual_diff_AIRS'] = ratio
                     #print('AIRS', ratio, residual/residual_filtered)
-                    kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [0.9,1.1]) # up to ~3e-5 in training, but up to ~12e-5 in test
+                    #kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [0.9,1.3]) # up to ~3e-5 in training, but up to ~12e-5 in test
             #print(self.transit_param)
 
 
@@ -276,3 +287,76 @@ class SimpleModel(kgs.Model):
         #     tb = traceback.extract_tb(exc_tb)
         #     filename, lineno, funcname, text = tb[-1]
         #     raise kgs.ArielException((lineno-116)/10,text)
+        
+        
+@dataclass
+class SimpleModelChainer(kgs.Model):
+    model: SimpleModel = field(init=True, default_factory=SimpleModel)
+    
+    _train_data = None
+    
+    ok_threshold = 1.02
+    chop_threshold = 1.05
+    n_alternative_params = 3
+    improvement_threshold_chopping = 2
+    chop_amount = 150
+    
+    def _train(self,train_data):
+        self.model.train(train_data)
+        self._train_data = train_data
+        
+    def _infer_single(self,data):
+        def try_one(data, early_stop):
+            data.transits[0].load_to_step(5, data, self.model.loaders)
+            data_results = []
+            score_results = []
+            for ii in range(self.n_alternative_params+2):
+                model = copy.deepcopy(self.model)
+                dat = copy.deepcopy(data)
+                if ii==1:
+                    if early_stop:
+                        print(f'Old solver/alternative transit parameters fallback for planet id {data.planet_id}')
+                    continue
+                    #model.new_solver = False
+                elif ii>2:
+                    dat.transit_params = self._train_data[ii-2].transit_params
+                dat = self.model.infer([dat])[0]
+                data_results.append(dat)
+                score_results.append(dat.diagnostics['simple_residual_diff_AIRS'])
+                if ii==0 and early_stop and score_results[-1]<self.ok_threshold:
+                    return data_results[-1], score_results[-1]
+            best_ind = np.argmin(score_results)
+            return data_results[best_ind], score_results[best_ind]
+        
+        [result, score] = try_one(data, True)
+        result.diagnostics['chopped'] = False
+        
+        if score>self.chop_threshold:
+            print('Attempting chop')
+            for chop_right in [False,True]:
+                if chop_right:
+                    slic = slice(None,-self.chop_amount)
+                else:
+                    slic = slice(self.chop_amount,None)
+                d = copy.deepcopy(data)
+                d.transits[0].data[1].data = d.transits[0].data[1].data[slic,...]
+                d.transits[0].data[1].times = d.transits[0].data[1].times[slic,...]
+                d.transits[0].data[1].time_intervals = d.transits[0].data[1].time_intervals[slic,...]
+                [alt_result, alt_score] = try_one(d, True)
+                if np.abs(alt_score-1)<0.5*(np.abs(score-1)):
+                    print(f'Chop used on planet id {result.planet_id}')
+                    result.diagnostics['chopped'] = True
+                    result = alt_result
+                    score = alt_score
+                    break
+        
+        result.diagnostics['suspicious_AIRS'] = result.diagnostics['simple_residual_diff_AIRS']>self.ok_threshold
+        
+        kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0, 'simple_t0_AIRS', 11, [2.8, 4.7])
+        kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0-result.diagnostics['transit_params'][0].t0, 'simple_t0_diff', 11, [-0.03,0.03])
+        kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_FGS'], 'simple_residual_diff_FGS', 12, [0.95,1.05])
+        kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_AIRS'], 'simple_residual_diff_AIRS', 13, [0.95,1.15])
+        
+        return result
+                
+                

@@ -636,6 +636,8 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
         
         planet.diagnostics['AIRS_fallback'] = False
         
+        all_coeffs=[]
+        
         for i_wavelength in range(282):
         
             isnan = cp.isnan(dataa[0,:,i_wavelength]).get()
@@ -646,11 +648,11 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
             rhs[:,isnan] = 0        
             rhs=rhs.flatten()
             
-            if diagnostic_plots and i_wavelength==0:
-                plt.figure()
-                plt.imshow(rhs.reshape(32,32))
-                plt.title('Raw covariance')
-                plt.colorbar()
+#             if diagnostic_plots and i_wavelength==0:
+#                 plt.figure()
+#                 plt.imshow(rhs.reshape(32,32))
+#                 plt.title('Raw covariance')
+#                 plt.colorbar()
 
            # plt.figure()
            # plt.imshow(rhs.reshape(32,32).get())
@@ -667,11 +669,11 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                 
             coeffs = np.linalg.lstsq(design_matrix, rhs, rcond=None)[0]    
             residual_cov = rhs - design_matrix@coeffs        
-            if diagnostic_plots and i_wavelength==0:                
-                plt.figure()
-                plt.imshow(residual_cov.reshape(32,32))
-                plt.title('Covariance residual')
-                plt.colorbar()
+            # if diagnostic_plots and i_wavelength==0:                
+            #     plt.figure()
+            #     plt.imshow(residual_cov.reshape(32,32))
+            #     plt.title('Covariance residual')
+            #     plt.colorbar()
             noise_est_naive[:,i_wavelength] = 0.4*cp.sqrt(64+cp.abs(cp.mean(dataa[:,:,i_wavelength],0)))
             noise_est2 = cp.array(coeffs[3:])
             to_change = noise_est2<noise_est_naive[:,i_wavelength]**2
@@ -722,7 +724,8 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                     residual[:,:,i_wavelength] = (intermediate_residual.T - design_matrix[:1,:].T@coeffs).T                       
                 else:
                     res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
-                    coeffs = res[0]
+                    coeffs = res[0]                    
+                        #plt.plot(coeffs[1,:].get())
                     assert not cp.any(cp.isnan(coeffs))
                     residual[:,:,i_wavelength] = (dataa[:,:,i_wavelength].T - design_matrix.T@coeffs).T    
                 
@@ -765,12 +768,16 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
                         # else:
                         #     result[:,i_wavelength] = coeffs[0,:]
                         # break
+            if diagnostic_plots:
+                all_coeffs.append(coeffs)
                         
         #kgs.sanity_check(np.nanmin, noise_est_full/noise_est_naive, 'noise_est_ratio', 3, [0.4,0.9])
         kgs.sanity_check(np.nanmax, 1-cp.std(residual,0)/residual_expected, 'residual_std_ratio', 4, [0.03,0.15])
         kgs.sanity_check(lambda x:np.nanmax(np.abs(x)), cp.mean(residual,0)/residual_expected, 'residual_mean_ratio', 5, [0,5])
               
         if diagnostic_plots:
+            plt.figure()
+            plt.plot(cp.mean(cp.stack(all_coeffs),0)[2,:].get())
             plt.figure()
             plt.scatter(noise_est_naive.flatten().get(), noise_est_full.flatten().get())
             plt.axline((0,0), slope=1, color='black')
