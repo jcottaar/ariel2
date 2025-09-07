@@ -344,18 +344,21 @@ class ApplyPixelCorrections(kgs.BaseClass):
             #is_cosmic_ray[1:-1,...] = ( (diff[1:,...]>self.cosmic_ray_threshold) & (diff[:-1,...]>self.cosmic_ray_threshold))
             if self.new_cosmic_ray_removal:
                 #is_cosmic_ray = cp.ones_like(signal,  dtype=cp.bool_)
+                cosmic_ray_count = 0
                 for ii in range(signal.shape[1]):
                     signal_noise = ariel_numerics.remove_trend_cp(signal[:,ii,...])
                     #plt.figure()
                     #plt.plot(signal_noise.reshape(signal_noise.shape[0],-1).get())
                     #plt.title(cp.std(signal_noise,0))
+                    #print(self.cosmic_ray_threshold)
                     is_cosmic_ray = cp.abs(signal_noise - cp.mean(signal_noise,0))/cp.std(signal_noise,0) > self.cosmic_ray_threshold
                     signal[:,ii,...][is_cosmic_ray] = cp.nan
+                    cosmic_ray_count += cp.sum(is_cosmic_ray)
                 #is_comsic_ray_alt = cp.abs(signal_noise - cp.mean(signal_noise,0))/cp.std(signal_noise,0) > self.cosmic_ray_threshold
                 #assert cp.all(is_cosmic_ray==is_comsic_ray_alt)
             else:
                 is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold            
-            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), is_cosmic_ray, 'cosmic_ray_removal', 10, [0,5e-6])
+            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), cosmic_ray_count/np.prod(signal.shape), 'cosmic_ray_removal', 10, [0,5e-6])            
             #print(cp.max(cp.mean(is_cosmic_ray)))
             
             return signal

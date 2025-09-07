@@ -66,11 +66,14 @@ class ModelOptions(kgs.BaseClass):
     transit_std_scaling = 1.
     unregularize_transit = False
     common_parameters = None
+    output_model = False
+    modify_func = None
     
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [1,2,3]
         self.transit_prior_info = kgs.dill_load(kgs.code_dir + 'transit_depth_gp_with_pca.pickle')
+        self.modify_func = lambda x:x
         
 
 
@@ -367,6 +370,11 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
     if stop_before_solve:
         # For external analysis
         return prior_model, model_uninitialized, obs
+    
+    prior_model = model_options.modify_func(prior_model)
+    
+    if 'starting_par' in data.diagnostics.keys():
+        prior_model.set_parameters(data.diagnostics['starting_par'])
 
     # Call the solver in gp.py
     def adapt_func(model):
@@ -383,7 +391,7 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
         update_rate=model_options.update_rate, n_iter=model_options.n_iter, update_hyperparameters_from=0,\
         hyperparameter_method = 'gradient_descent', adapt_func = adapt_func, max_log_update_initial = model_options.max_log_update_hyperparameters,\
         n_samples = model_options.n_samples_sigma_est, fill_noise_parameters=model_options.make_noise_consistent)
-
+    
     # Plot if desired
     if plot_final:
         visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, simple=plot_simple)
@@ -459,8 +467,12 @@ class PredictionModel(kgs.Model):
 
     
     def _infer_single(self, test_data):
-         
-        test_data = self.starter_model.infer([test_data])[0]
+        
+        if not 'starting_par' in test_data.diagnostics.keys():
+            test_data = self.starter_model.infer([test_data])[0]
+        else:
+            assert test_data.is_train
+            test_data.spectrum = test_data.diagnostics['training_spectrum']
         test_data.transits[0].load_to_step(5, test_data, self.loaders)
         
         # Construct and fithe GP
@@ -505,6 +517,13 @@ class PredictionModel(kgs.Model):
             test_data.diagnostics['transit_scaler'] = results['model_mean'].m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor 
         except:
             pass
+        
+        if self.model_options.output_model:
+            test_data.diagnostics['model_mean'] = copy.deepcopy(results['model_mean'])
+            test_data.diagnostics['model_mean'].clear_all_caches()
+            test_data.diagnostics['model_samples'] = copy.deepcopy(results['model_samples'])            
+            test_data.diagnostics['model_samples'].clear_all_caches()
+
         
         return test_data
 
@@ -598,6 +617,8 @@ class TransitModel(gp.Model):
     Rp_parameter = 4
     std_values = None
     fit_slopes = True
+    cov_override = None
+    mu_override = None
     
     
     def __post_init__(self):
@@ -783,28 +804,34 @@ class TransitModel(gp.Model):
     def get_prior_distribution_internal(self,obs):
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_observation_relationship=False) 
         
-        sigma_values = []
-        transit_x0 = self.transit_params[0][0].to_x()
-        n_params1 = len(self.transit_params[0][0].to_x())
-        n_params2 = len(self.transit_params[0][1].to_x())
-        n_params = max(n_params1, n_params2)
-        for i_param in range(n_params):
-            if i_param in self.common_parameters:
-                sigma_values.append(self.std_values[i_param])
-            elif not i_param == self.Rp_parameter:
-                if i_param<n_params1:
+        if self.cov_override is None:
+            sigma_values = []
+            transit_x0 = self.transit_params[0][0].to_x()
+            n_params1 = len(self.transit_params[0][0].to_x())
+            n_params2 = len(self.transit_params[0][1].to_x())
+            n_params = max(n_params1, n_params2)
+            for i_param in range(n_params):
+                if i_param in self.common_parameters:
                     sigma_values.append(self.std_values[i_param])
-                if i_param<n_params2:
-                    sigma_values.append(self.std_values[i_param])
-        if self.fit_slopes:
-            for ii in range(len(self.AIRS_u_slopes[0])):
-                sigma_values.append(self.std_values[-1])
-         
-        prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
-            prior_matrices.prior_precision_matrix ,  sp.sparse.diags(1/np.array(sigma_values)**2, format=gp.sparse_matrix_str)
-            ], format=gp.sparse_matrix_str )
-        
-        prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.get_parameters()[self.depth_model.number_of_parameters:,0]])
+                elif not i_param == self.Rp_parameter:
+                    if i_param<n_params1:
+                        sigma_values.append(self.std_values[i_param])
+                    if i_param<n_params2:
+                        sigma_values.append(self.std_values[i_param])
+            if self.fit_slopes:
+                for ii in range(len(self.AIRS_u_slopes[0])):
+                    sigma_values.append(self.std_values[-1])
+
+            prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
+                prior_matrices.prior_precision_matrix ,  sp.sparse.diags(1/np.array(sigma_values)**2, format=gp.sparse_matrix_str)
+                ], format=gp.sparse_matrix_str )
+
+            prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.get_parameters()[self.depth_model.number_of_parameters:,0]])
+        else:
+            prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
+                prior_matrices.prior_precision_matrix , gp.sparse_matrix(np.linalg.inv(self.cov_override))
+                ], format=gp.sparse_matrix_str )
+            prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.mu_override])
         prior_matrices.number_of_parameters = self.number_of_parameters
         return prior_matrices
 
