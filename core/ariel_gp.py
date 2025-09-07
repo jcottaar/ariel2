@@ -63,9 +63,13 @@ class ModelOptions(kgs.BaseClass):
     FGS_transit_override = None
     AIRS_transit_override = None
     supersample_override = [None,None]
+    transit_std_scaling = 1.
+    unregularize_transit = False
+    common_parameters = None
     
     def __post_init__(self):
         super().__post_init__()
+        self.common_parameters = [0,1,2,3]
         self.transit_prior_info = kgs.dill_load(kgs.code_dir + 'transit_depth_gp_with_pca.pickle')
         
 
@@ -258,6 +262,7 @@ def define_prior(obs, model_options, data):
     transit_model = TransitModel()
     transit_model.c1 = 1e20 # tweak numerical check
     transit_model.c2 = 1e20 # tweak numerical check
+    transit_model.std_values = [model_options.transit_std_scaling*x for x in transit_model.std_values]
     transit_model.depth_model = transit_depth_model
 
 
@@ -317,6 +322,7 @@ def define_prior(obs, model_options, data):
     for ii in range(2):
         if not model_options.supersample_override[ii] is None:
             model.m['signal'].m['main'].m['transit'].transit_params[0][ii].supersample_factor = model_options.supersample_override[ii]
+    model.m['signal'].m['main'].m['transit'].common_parameters = model_options.common_parameters
 
     model.force_cache_observation_relationship = True
     model_uninitialized = copy.deepcopy(model)
@@ -368,6 +374,10 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
         if not model_options.use_training_labels:
             model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor = \
                 np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor))
+        if model_options.unregularize_transit:
+            model.m['signal'].m['main'].m['transit'].std_values = [1000*x for x in model.m['signal'].m['main'].m['transit'].std_values]
+            #model.m['signal'].m['main'].m['transit'].std_values[2] = 0.1
+            #model.m['signal'].m['main'].m['transit'].std_values[3] = 0.1
         return model        
     posterior_mean, posterior_samples = gp.solve_gp_nonlinear(prior_model, obs, rng=np.random.default_rng(seed=data.planet_id), \
         update_rate=model_options.update_rate, n_iter=model_options.n_iter, update_hyperparameters_from=0,\
@@ -485,6 +495,12 @@ class PredictionModel(kgs.Model):
         test_data.spectrum = copy.deepcopy(pred)
         test_data.spectrum_cov = copy.deepcopy(cov)
         test_data.diagnostics['t0_diff'] = results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].t0 - results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].t0
+        test_data.diagnostics['transit_params_gp'] = results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0]
+        test_data.diagnostics['transit_params_gp_par'] = results['model_mean'].m['signal'].m['main'].m['transit'].get_parameters()[-results['model_mean'].m['signal'].m['main'].m['transit'].number_of_extra_parameters:]
+        todo = np.concatenate([[0],np.arange(results['model_samples'].m['signal'].m['main'].m['transit'].depth_model.number_of_parameters, 
+                                                                                                    results['model_samples'].m['signal'].m['main'].m['transit'].number_of_parameters)])
+        cov = np.cov(results['model_samples'].m['signal'].m['main'].m['transit'].get_parameters()[todo,:])    
+        test_data.diagnostics['transit_params_gp_par_cov'] = cov
         try:
             test_data.diagnostics['transit_scaler'] = results['model_mean'].m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor 
         except:
@@ -1066,6 +1082,22 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
         return
 
 
+    _,ax = plt.subplots(1,2,figsize=(12,6))
+    todo = np.concatenate([[0],np.arange(posterior_samples.m['signal'].m['main'].m['transit'].depth_model.number_of_parameters, 
+                                                                                                    posterior_samples.m['signal'].m['main'].m['transit'].number_of_parameters)])
+    cov = np.cov(posterior_samples.m['signal'].m['main'].m['transit'].get_parameters()[todo,:])    
+    plt.sca(ax[0])
+    plt.imshow(cov)
+    plt.colorbar()
+    plt.title('Transit covariance')
+    #cov = np.delete(np.delete(cov, 4, 0), 3, 1)
+    corr = cov
+    corr = corr/np.sqrt(np.diag(cov))/np.sqrt(np.diag(cov))[:,None]
+    plt.sca(ax[1])
+    plt.imshow(corr)
+    plt.colorbar()
+    plt.title('Transit correlation')
+    
     # plt.sca(ax[1])    
     # plt.scatter(obs.df['time'], posterior_mean.m['signal'].m['main'].m['transit'].m['transit_window'].get_prediction(obs))
     # plt.grid(True)
@@ -1163,6 +1195,9 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     noise_prior_sample = gp.sample_from_prior(posterior_mean.m['noise'], obs, n_samples=1)
     obs_noise_prior_sample = copy.deepcopy(obs)
     obs_noise_prior_sample.labels = noise_prior_sample.get_prediction(obs)
+    
+    #for ii in range(posterior_samples.number_of_instances):
+    #    print(posterior_samples.m['signal'].m['main'].m['transit'].transit_params[ii][0].to_x())
 
     obs_signal_sample = copy.deepcopy(obs)
     obs_signal_sample.labels = posterior_samples.m['signal'].get_prediction(obs)

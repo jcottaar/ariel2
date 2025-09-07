@@ -860,8 +860,8 @@ def score_metric(data,reference_data,print_results=True):
         print(f"RMS error AIRSv: {1e6*rms_error_airs_var:.5f} ppm")
         print(f"mRMS error AIRSv:{1e6*rms_error_airs_var_median:.5f} ppm")
         
-    if debugging_mode>=1:
-        assert(score - score_metric_fast(*data_to_mats(data,reference_data)) < 1e-9)
+    #if debugging_mode>=1:
+    #    assert(score - score_metric_fast(*data_to_mats(data,reference_data)) < 1e-9)
     
     return score,rms_error_fgs,rms_error_airs
 

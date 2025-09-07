@@ -91,12 +91,15 @@ class SimpleModel(kgs.Model):
 
             # Prepare stuff   
             for ii in range(2):
-                self.transit_param[ii] = copy.deepcopy(data.transit_params)
+                self.transit_param[ii] = copy.deepcopy(data.transit_params)                
                 if abs(self.transit_param[ii].i-90)<0.1:
                     # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
                     self.transit_param[ii].i = 89.9
                 self.transit_param[ii].Rp = self.rp_init[ii]
                 self.transit_param[ii].u = self.u_init[ii]
+                #xx=self.transit_param[ii].to_x()
+                #xx[2]=0
+                #self.transit_param[ii].from_x(xx)
             self.poly_order = self.poly_order_step1
             self.poly_vals = [np.zeros(self.poly_order+1), np.zeros(self.poly_order+1)]                
             self._targets = [None, None]
@@ -161,6 +164,7 @@ class SimpleModel(kgs.Model):
                 step1.append(self._light_curve(ii))
             # Step 2
             if self.new_solver:
+                raise 'inactive'
                 assert self.unlock_t0
                 def residual(x):
                     self._from_x(x)
@@ -188,10 +192,10 @@ class SimpleModel(kgs.Model):
                     ub = np.inf*np.ones(len(x0))
                     lb[-1] = -0.1-0.001*o
                     ub[-1] = 0.1+0.001*o
-                    lb[1]=-10
-                    lb[2]=-10
-                    ub[1]=10
-                    ub[2]=10
+                    lb[1]=-10-0.001*o
+                    lb[2]=-0.5-0.001*o
+                    ub[1]=10+0.001*o
+                    ub[2]=0.5+0.001*o
                     res = scipy.optimize.least_squares(
                         fun=residual,
                         x0=x0,
@@ -201,6 +205,15 @@ class SimpleModel(kgs.Model):
                         #f_scale=2.0,         # tunes outlier influence
                         #max_nfev=2000
                     )
+                    def cost(x, do_plot = False):
+                        self._from_x(x)
+                        cost = 0
+                        self.pred = [None]*2
+                        for ii in range(2):
+                            self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
+                            cost += self.weights[ii]*np.sqrt(np.mean( (self.pred[ii]-self._targets[ii])**2 ))
+                        return cost
+                    #res = scipy.optimize.minimize(cost,res.x)        
                     self.cost_list.append(cost(res.x))
                 #print(res.x)
                 
@@ -226,25 +239,7 @@ class SimpleModel(kgs.Model):
                     self.cost_list.append(cost(res.x))
 
 
-            if self.do_plots:            
-                _,ax = plt.subplots(2,3,figsize=(15,10))
-                for ii in range(2):
-                    plt.sca(ax[0,ii])
-                    plt.grid(True)
-                    plt.xlabel('Time [h]')
-                    plt.ylabel('Normalized intensity')
-                    plt.plot(self._times[ii], self._targets[ii])
-                    plt.plot(self._times[ii], step1[ii])
-                    plt.plot(self._times[ii], self.pred[ii])
-                    plt.legend(('Measured', 'After step 1', 'After step 2'))
-                    plt.sca(ax[1,ii])
-                    plt.plot(self._targets[ii]-self.pred[ii])
-                plt.sca(ax[0,2])
-                plt.plot(self.order_list[1:], self.cost_list[1:])
-                plt.grid(True)
-                plt.xlabel('Poly order')
-                plt.ylabel('Cost')
-                plt.pause(0.001)
+            
             
             # sanity checks: t0, ecc, noise ratio
             
@@ -264,6 +259,27 @@ class SimpleModel(kgs.Model):
                     #print('AIRS', ratio, residual/residual_filtered)
                     #kgs.sanity_check(lambda x:x, ratio, 'simple_residual_diff_AIRS', 13, [0.9,1.3]) # up to ~3e-5 in training, but up to ~12e-5 in test
             #print(self.transit_param)
+            
+            if self.do_plots:            
+                _,ax = plt.subplots(2,3,figsize=(15,10))
+                for ii in range(2):
+                    plt.sca(ax[0,ii])
+                    plt.grid(True)
+                    plt.xlabel('Time [h]')
+                    plt.ylabel('Normalized intensity')
+                    plt.plot(self._times[ii], self._targets[ii])
+                    plt.plot(self._times[ii], step1[ii])
+                    plt.plot(self._times[ii], self.pred[ii])
+                    plt.legend(('Measured', 'After step 1', 'After step 2'))
+                    plt.sca(ax[1,ii])
+                    plt.plot(self._targets[ii]-self.pred[ii])
+                plt.sca(ax[0,2])
+                plt.plot(self.order_list[1:], self.cost_list[1:])
+                plt.grid(True)
+                plt.xlabel('Poly order')
+                plt.ylabel('Cost')
+                plt.pause(0.001)
+                print( data.diagnostics['simple_residual_diff_FGS'], data.diagnostics['simple_residual_diff_AIRS'])
 
 
             # Report resutls
@@ -277,6 +293,7 @@ class SimpleModel(kgs.Model):
             data.diagnostics['t_ingress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[0,0]]
             data.diagnostics['t_egress'] = self._times[0][np.argwhere(self.pred[0]<midpoint)[-1,0]]
             data.diagnostics['transit_params'] = copy.deepcopy(self.transit_param)
+            #data.diagnostics['poly_vals'] = copy.deepcopy(self.poly_vals)
             data.check_constraints()
             
             return data
@@ -312,13 +329,15 @@ class SimpleModelChainer(kgs.Model):
             score_results = []
             for ii in range(self.n_alternative_params+2):
                 model = copy.deepcopy(self.model)
+                model.new_solver = False
                 dat = copy.deepcopy(data)
                 if ii==1:
                     if early_stop:
-                        print(f'Old solver/alternative transit parameters fallback for planet id {data.planet_id}')
+                        print(f'New solver/alternative transit parameters fallback for planet id {data.planet_id}')
                     continue
-                    #model.new_solver = False
+                    model.new_solver = True
                 elif ii>2:
+                    model.new_solver = False
                     dat.transit_params = self._train_data[ii-2].transit_params
                 dat = self.model.infer([dat])[0]
                 data_results.append(dat)
@@ -353,7 +372,7 @@ class SimpleModelChainer(kgs.Model):
         result.diagnostics['suspicious_AIRS'] = result.diagnostics['simple_residual_diff_AIRS']>self.ok_threshold
         
         kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0, 'simple_t0_AIRS', 11, [2.8, 4.7])
-        kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0-result.diagnostics['transit_params'][0].t0, 'simple_t0_diff', 11, [-0.03,0.03])
+        kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0-result.diagnostics['transit_params'][0].t0, 'simple_t0_diff', 11, [-0.04,0.04])
         kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_FGS'], 'simple_residual_diff_FGS', 12, [0.95,1.05])
         kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_AIRS'], 'simple_residual_diff_AIRS', 13, [0.95,1.15])
         

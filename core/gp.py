@@ -1271,6 +1271,7 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         rng = np.random.default_rng(seed=0)
     state = copy.deepcopy(rng.bit_generator.state)
     for i in range(n_iter):
+        #print(model.m['signal'].m['main'].m['transit'].get_parameters()[-model.m['signal'].m['main'].m['transit'].number_of_extra_parameters:].T)
         rng.bit_generator.state = copy.deepcopy(state)   
         if i<update_hyperparameters_from:
             # Iteration with just parameter updates
@@ -1311,7 +1312,9 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         # Parameter update
         param_old = model.get_parameters()
         param_new = param_old + update_rate*(model_new.get_parameters()-param_old)
+        
         model.set_parameters(param_new)
+        
  
 
     rng.bit_generator.state = copy.deepcopy(state)
