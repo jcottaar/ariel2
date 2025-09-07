@@ -69,7 +69,7 @@ class ModelOptions(kgs.BaseClass):
     
     def __post_init__(self):
         super().__post_init__()
-        self.common_parameters = [0,1,2,3]
+        self.common_parameters = [1,2,3]
         self.transit_prior_info = kgs.dill_load(kgs.code_dir + 'transit_depth_gp_with_pca.pickle')
         
 
@@ -452,7 +452,7 @@ class PredictionModel(kgs.Model):
     def __init__(self):
         super().__init__()
         self.model_options = ModelOptions()
-        self.starter_model = ariel_simple.SimpleModel()
+        self.starter_model = ariel_simple.SimpleModelChainer()
 
     def _train(self, train_data):
         self.starter_model.train(train_data)

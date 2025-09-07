@@ -34,7 +34,7 @@ class SimpleModel(kgs.Model):
     do_step2 = True
     weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     order_list: list = field(init=True, default_factory=lambda:[0,1,2,3]) 
-    unlock_t0: bool = field(init=True, default=False)
+    unlock_t0: bool = field(init=True, default=True)
     new_solver: bool = field(init=True, default=False)
     
     # internal

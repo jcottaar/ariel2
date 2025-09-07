@@ -348,6 +348,7 @@ class MultiTransit(kgs.Model):
 
 def baseline_model():
     model = Fudger2(model=ariel_gp.PredictionModel())
+    model.model.starter_model.train(kgs.load_all_train_data())
     model.model.run_in_parallel = True
     return model
 

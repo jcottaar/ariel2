@@ -255,9 +255,9 @@ class ApplyPixelCorrections(kgs.BaseClass):
     dark_current = True
     flat_field = True
     remove_cosmic_rays = True
-    new_cosmic_ray_removal = False
+    new_cosmic_ray_removal = True
     cosmic_ray_threshold = 20
-    remove_last_frame = False
+    remove_last_frame = True
     
     adc_offset_sign = 1 
     dark_current_sign = 1
@@ -548,7 +548,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
 @dataclass
 class ApplyTimeBinning(kgs.BaseClass):
     
-    add_last_frame = False
+    add_last_frame = True
     time_binning = 3
     
     def __call__(self, data, planet, observation_number):
