@@ -1310,8 +1310,10 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
             model.set_hyperparameters(hparam_new)          
                 
         # Parameter update
+        #print('before', log_likelihood_given_parameters(model)
         param_old = model.get_parameters()
         param_new = param_old + update_rate*(model_new.get_parameters()-param_old)
+        #print('after', log_likelihood_given_parameters(model)
         
         model.set_parameters(param_new)
         

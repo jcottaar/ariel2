@@ -26,6 +26,8 @@ class SimpleModel(kgs.Model):
     # Configuration - step 1
     poly_order_step1 = 1
     t_steps = 100
+    min_t0 = 2.5
+    max_t0 = 5
     rp_vals: np.ndarray = field(init=True, default_factory=lambda:np.linspace(0,0.5,500))
     rp_init: list = field(init=True, default_factory=lambda:[0.05,0.05]) # FGS, AIRS
     u_init: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
@@ -138,7 +140,8 @@ class SimpleModel(kgs.Model):
                     poly_vals[jj]=1.
                     cheb_mat[:,jj] = np.polynomial.chebyshev.chebval(self._times_norm[ii], poly_vals)
                 cheb_mat = cp.array(cheb_mat)
-                t0_vals = np.round(np.linspace(0,len(self._times[ii]),self.t_steps)).astype(int)
+                t0_vals = np.round(np.linspace(0,len(self._times[ii])-1,self.t_steps)).astype(int)    
+                t0_vals = t0_vals[(self._times[ii][t0_vals]>self.min_t0) & (self._times[ii][t0_vals]<self.max_t0)]
                 res_mat = cp.empty((len(t0_vals), len(self.rp_vals)))
                 rp_vals_cp = cp.array(self.rp_vals)
                 for i_t, t0_ind in enumerate(t0_vals):
@@ -150,7 +153,7 @@ class SimpleModel(kgs.Model):
                     #     res_mat[i_t, i_rp] = cp.linalg.lstsq(design_mat, target_cp / (1-(rp/self.rp[ii])**2 *(1-this_curve[:])))[1][0]
                     res_mat[i_t, :] = cp.linalg.lstsq(cheb_mat, target_cp[:,None] / (1-(rp_vals_cp[None,:]/self.transit_param[ii].Rp)**2 *(1-this_curve[:,None])), rcond=None)[1]
                 min_index = cp.unravel_index(cp.argmin(res_mat), res_mat.shape)           
-                start_ind = t0_vals[min_index[0].get()] + len(self._times[ii])//2            
+                start_ind = t0_vals[min_index[0].get()] + len(self._times[ii])//2     
                 this_curve = base_curve[start_ind:start_ind+len(self._times[ii])]            
                 this_res_mat = []                 
                 design_mat = cheb_mat*(1-(self.rp_vals[min_index[1].get()]/self.transit_param[ii].Rp)**2 *(1-this_curve[:,None]))
@@ -304,8 +307,8 @@ class SimpleModel(kgs.Model):
         #     tb = traceback.extract_tb(exc_tb)
         #     filename, lineno, funcname, text = tb[-1]
         #     raise kgs.ArielException((lineno-116)/10,text)
-        
-        
+
+
 @dataclass
 class SimpleModelChainer(kgs.Model):
     model: SimpleModel = field(init=True, default_factory=SimpleModel)
@@ -314,7 +317,7 @@ class SimpleModelChainer(kgs.Model):
     
     ok_threshold = 1.02
     chop_threshold = 1.05
-    n_alternative_params = 3
+    n_alternative_params = 10
     improvement_threshold_chopping = 2
     chop_amount = 150
     
@@ -341,7 +344,7 @@ class SimpleModelChainer(kgs.Model):
                     dat.transit_params = self._train_data[ii-2].transit_params
                 dat = self.model.infer([dat])[0]
                 data_results.append(dat)
-                score_results.append(dat.diagnostics['simple_residual_diff_AIRS'])
+                score_results.append(max(dat.diagnostics['simple_residual_diff_AIRS'],dat.diagnostics['simple_residual_diff_FGS']))
                 if ii==0 and early_stop and score_results[-1]<self.ok_threshold:
                     return data_results[-1], score_results[-1]
             best_ind = np.argmin(score_results)
@@ -377,5 +380,5 @@ class SimpleModelChainer(kgs.Model):
         kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_AIRS'], 'simple_residual_diff_AIRS', 13, [0.95,1.15])
         
         return result
-                
+
                 

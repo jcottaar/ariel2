@@ -68,12 +68,13 @@ class ModelOptions(kgs.BaseClass):
     common_parameters = None
     output_model = False
     modify_func = None
+    modify_func_input = None
     
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [1,2,3]
         self.transit_prior_info = kgs.dill_load(kgs.code_dir + 'transit_depth_gp_with_pca.pickle')
-        self.modify_func = lambda x:x
+        self.modify_func = lambda x,y:x
         
 
 
@@ -371,10 +372,10 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
         # For external analysis
         return prior_model, model_uninitialized, obs
     
-    prior_model = model_options.modify_func(prior_model)
+    prior_model = model_options.modify_func(prior_model, model_options.modify_func_input)
     
     if 'starting_par' in data.diagnostics.keys():
-        prior_model.set_parameters(data.diagnostics['starting_par'])
+        prior_model.m['signal'].set_parameters(data.diagnostics['starting_par'])
 
     # Call the solver in gp.py
     def adapt_func(model):
@@ -519,11 +520,8 @@ class PredictionModel(kgs.Model):
             pass
         
         if self.model_options.output_model:
-            test_data.diagnostics['model_mean'] = copy.deepcopy(results['model_mean'])
-            test_data.diagnostics['model_mean'].clear_all_caches()
-            test_data.diagnostics['model_samples'] = copy.deepcopy(results['model_samples'])            
-            test_data.diagnostics['model_samples'].clear_all_caches()
-
+            test_data.diagnostics['par_mean'] = copy.deepcopy(results['model_mean'].m['signal'].get_parameters())
+            test_data.diagnostics['par_samples'] = copy.deepcopy(results['model_samples'].m['signal'].get_parameters())
         
         return test_data
 
