@@ -29,8 +29,12 @@ class TransitParams(kgs.BaseClass):
     limb_dark: str = field(init=True, default = 'quadratic')
     u: np.ndarray = field(init=True, default=None) # limb darkening
     
+    beta_store = 0
+    
     # Which parameters are free?
     expose_e_and_w: bool =  field(init=True, default=False)
+    force_kepler: bool = field(init=True, default=False)
+    force_inc = None
     
     # Modeling configuration
     supersample_factor = 1
@@ -80,6 +84,8 @@ class TransitParams(kgs.BaseClass):
         alpha = A - B                          # log((a/Rs)/P) -> controls duration/shape
         beta  = A - (2.0/3.0)*B - math.log(K)  # Kepler residual (singular dir)
 
+        if self.force_kepler:
+            beta = self.beta_store
         x = [self.t0, alpha, beta, self.i, self.Rp] + list(self.u)
         return x
 
@@ -88,6 +94,9 @@ class TransitParams(kgs.BaseClass):
         self.t0 = x[0]
         alpha   = x[1]
         beta    = x[2]
+        if self.force_kepler:
+            beta = 0
+            self.beta_store = x[2]
         self.i  = x[3]
         self.Rp = x[4]
         self.u  = np.array(x[5:])
@@ -100,6 +109,7 @@ class TransitParams(kgs.BaseClass):
         # beta  = A - (2/3)B - ln K
         # => B = 3 * (ln K - (alpha - beta)),  A = alpha + B
         B = 3.0 * (math.log(K) - (alpha - beta))
+       # print(alpha,beta,B)
         A = alpha + B
 
         self.P   = math.exp(B)    # hours
@@ -108,8 +118,19 @@ class TransitParams(kgs.BaseClass):
         if kgs.debugging_mode >= 2:
             assert np.all(np.abs(np.array(self.to_x()) - np.array(x)) <= 1e-10)
             
+    def sanity_check(self,prefix):
+        x = self.to_x()
+        kgs.sanity_check(lambda x:x, x[0], prefix+'t0', 5, [2.5,5])
+        kgs.sanity_check(lambda x:x, x[1], prefix+'alpha', 6, [-4,-1])
+        kgs.sanity_check(lambda x:x, x[2], prefix+'beta', 0, [-1,1])
+        kgs.sanity_check(lambda x:x, x[3], prefix+'inc', 7, [84,90])
+        kgs.sanity_check(lambda x:x, x[5], prefix+'u0', 8, [0,0.8])
+        kgs.sanity_check(lambda x:x, x[6], prefix+'u1', 8, [0,0.4])
+            
     
     def light_curve(self,times):
+        if self.force_kepler:
+            self.from_x(self.to_x())
         params = batman.TransitParams()
         params.t0 = self.t0
         params.per = self.P
@@ -117,6 +138,7 @@ class TransitParams(kgs.BaseClass):
         params.a = self.sma
         params.inc = self.i
         params.ecc = self.e
+        if not self.force_inc is None: params.inc = self.force_inc
         params.w = self.w   
         params.limb_dark = self.limb_dark
         params.u = self.u

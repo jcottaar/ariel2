@@ -446,6 +446,7 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
 Support functions and classes
 '''
 
+
 class PredictionModel(kgs.Model):
     # Wrapper around the functionality in the model to match the interface defined by kgs.Model()
 
@@ -466,7 +467,6 @@ class PredictionModel(kgs.Model):
     def _train(self, train_data):
         self.starter_model.train(train_data)
 
-    
     def _infer_single(self, test_data):
         
         if not 'starting_par' in test_data.diagnostics.keys():
@@ -499,11 +499,36 @@ class PredictionModel(kgs.Model):
             cov[1:,1:] = self.fixed_AIRS_sigma**2
 
         # Sanity checks
-       # kgs.sanity_check(np.mean, pred, 'pred_mean', 10, [0, 0.03])
-       # kgs.sanity_check(np.std, pred, 'pred_std', 6, [0, 0.005])
-       # if self.model_options.n_samples_sigma_est>50:
-       #     kgs.sanity_check(np.min, sigma, 'sigma_min', 8, [7e-6, 1e-4])
-       #     kgs.sanity_check(np.max, sigma, 'sigma_max', 9, [7e-6, 0.0007])
+        kgs.sanity_check(np.mean, pred, 'pred_mean', 1, [0, 0.15])
+        kgs.sanity_check(np.std, pred, 'pred_std', 2, [0, 0.02])
+        if self.model_options.n_samples_sigma_est>50 and kgs.sanity_checks_active:
+            sigma = np.sqrt(np.diag(cov))
+            kgs.sanity_check(np.min, sigma, 'sigma_min', 3, [4e-6, 0.002])
+            kgs.sanity_check(np.max, sigma, 'sigma_max', 4, [7e-6, 0.002])
+        results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].sanity_check('FGS_')
+        results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].sanity_check('AIRS_')
+        kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].t0, 't0_diff', 10, [-0.05,0.05])
+        
+
+        obs_noise = copy.deepcopy(results['obs'])
+        obs_noise.labels = obs_noise.labels - results['model_mean'].m['signal'].get_prediction(obs_noise)
+        noise_AIRS = obs_noise.export_matrix(True)
+        noise_FGS = obs_noise.export_matrix(False)
+        
+        residual = kgs.rms(noise_FGS)
+        residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(noise_FGS)).get()
+        ratio = residual/residual_filtered
+        kgs.sanity_check(lambda x:x, ratio, 'residual_diff_FGS', 9, [0.95,1.05])
+        
+        for ii in range(5):
+            this_part = np.mean(noise_AIRS[:,50*ii:50*(ii+1)],1)
+            residual = kgs.rms(this_part)
+            residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(this_part))
+            ratio = residual/residual_filtered
+            kgs.sanity_check(lambda x:x, ratio, 'residual_diff_AIRS', 9, [0.95,1.1])
+            
+        
+        
 
         test_data.spectrum = copy.deepcopy(pred)
         test_data.spectrum_cov = copy.deepcopy(cov)
@@ -802,23 +827,24 @@ class TransitModel(gp.Model):
     def get_prior_distribution_internal(self,obs):
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_observation_relationship=False) 
         
-        if self.cov_override is None:
-            sigma_values = []
-            transit_x0 = self.transit_params[0][0].to_x()
-            n_params1 = len(self.transit_params[0][0].to_x())
-            n_params2 = len(self.transit_params[0][1].to_x())
-            n_params = max(n_params1, n_params2)
-            for i_param in range(n_params):
-                if i_param in self.common_parameters:
+        sigma_values = []
+        transit_x0 = self.transit_params[0][0].to_x()
+        n_params1 = len(self.transit_params[0][0].to_x())
+        n_params2 = len(self.transit_params[0][1].to_x())
+        n_params = max(n_params1, n_params2)
+        for i_param in range(n_params):
+            if i_param in self.common_parameters:
+                sigma_values.append(self.std_values[i_param])
+            elif not i_param == self.Rp_parameter:
+                if i_param<n_params1:
                     sigma_values.append(self.std_values[i_param])
-                elif not i_param == self.Rp_parameter:
-                    if i_param<n_params1:
-                        sigma_values.append(self.std_values[i_param])
-                    if i_param<n_params2:
-                        sigma_values.append(self.std_values[i_param])
-            if self.fit_slopes:
-                for ii in range(len(self.AIRS_u_slopes[0])):
-                    sigma_values.append(self.std_values[-1])
+                if i_param<n_params2:
+                    sigma_values.append(self.std_values[i_param])
+        if self.fit_slopes:
+            for ii in range(len(self.AIRS_u_slopes[0])):
+                sigma_values.append(self.std_values[-1])
+                    
+        if self.cov_override is None:
 
             prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
                 prior_matrices.prior_precision_matrix ,  sp.sparse.diags(1/np.array(sigma_values)**2, format=gp.sparse_matrix_str)
@@ -826,14 +852,25 @@ class TransitModel(gp.Model):
 
             prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.get_parameters()[self.depth_model.number_of_parameters:,0]])
         else:
+            # plt.figure()
+            # plt.plot(sigma_values)
+            # plt.plot(np.sqrt(np.diag(self.cov_override)))
+            # plt.pause(0.001)
+            cov = copy.deepcopy(self.cov_override)
+            mu = copy.deepcopy(self.mu_override)
+            for ii in range(cov.shape[0]):
+                if np.sqrt(np.diag(cov))[ii] > sigma_values[ii]:
+                    cov[ii,:] = 0
+                    cov[:,ii] = 0
+                    cov[ii,ii] = sigma_values[ii]**2
+                    mu[ii] =  self.get_parameters()[self.depth_model.number_of_parameters+ii,0]
             prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
-                prior_matrices.prior_precision_matrix , gp.sparse_matrix(np.linalg.inv(self.cov_override))
+                prior_matrices.prior_precision_matrix , gp.sparse_matrix(np.linalg.inv(cov))
                 ], format=gp.sparse_matrix_str )
-            prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.mu_override])
+            prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, mu])
         prior_matrices.number_of_parameters = self.number_of_parameters
         return prior_matrices
 
-    @kgs.profile_each_line
     def get_prediction_internal(self,obs):
         output = np.zeros((self.number_of_observations, self.number_of_instances))        
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)

@@ -31,13 +31,16 @@ class SimpleModel(kgs.Model):
     rp_vals: np.ndarray = field(init=True, default_factory=lambda:np.linspace(0,0.5,500))
     rp_init: list = field(init=True, default_factory=lambda:[0.05,0.05]) # FGS, AIRS
     u_init: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
+    force_kepler = False
     
     # Configuration - step 2
     do_step2 = True
-    weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
+    #weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     order_list: list = field(init=True, default_factory=lambda:[0,1,2,3]) 
     unlock_t0: bool = field(init=True, default=True)
     new_solver: bool = field(init=True, default=False)
+    do_regularization:  bool = field(init=True, default=False)
+    rescale_cost:  bool = field(init=True, default=True)
     
     # internal
     _targets = None # FGS, AIRS
@@ -66,7 +69,8 @@ class SimpleModel(kgs.Model):
     
     def _from_x(self, x):
         x=list(x)
-        len_xt = len(self.transit_param[0].to_x())
+        len_xt = 7#len(self.transit_param[0].to_x())
+        #print(len_xt)
         self.transit_param[0].from_x(x[:len_xt])
         self.transit_param[1].from_x(x[:4]+x[len_xt:2*len_xt-4])         
         cur_ind = 2*len_xt-4
@@ -80,6 +84,26 @@ class SimpleModel(kgs.Model):
         if kgs.debugging_mode>=2:
             assert np.all( np.abs(np.array(self._to_x())-np.array(x))<=1e-10 )
             
+    def _cov_mu(self):
+        inds_self = [0,1,2,3,5,6,8,9,-1]
+        inds_file = [0,2,3,4,5,7,6,8,1]
+        
+        cov_file, mu_file = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning9.pickle')    
+        
+        cov = np.diag(1e4*np.ones(len(self._to_x())))
+        mu = np.zeros(len(self._to_x()))
+        
+        cov[np.ix_(inds_self, inds_self)] = cov_file[np.ix_(inds_file, inds_file)]
+        mu[inds_self] = mu_file[inds_file]
+        
+        # Deal with FGS t0 - AIRS t0
+        mu[-1] = mu_file[1]-mu_file[0]
+        cov[-1,:] = 0
+        cov[:,-1] = 0
+        cov[-1,-1] = cov_file[1, 1] + cov_file[0, 0] - 2.0 * cov_file[0, 1]
+        
+        return cov, mu
+        
     
     def _light_curve(self, sensor_id):        
         res = self.transit_param[sensor_id].light_curve(self._times[sensor_id])
@@ -93,7 +117,8 @@ class SimpleModel(kgs.Model):
 
             # Prepare stuff   
             for ii in range(2):
-                self.transit_param[ii] = copy.deepcopy(data.transit_params)                
+                self.transit_param[ii] = copy.deepcopy(data.transit_params)        
+                self.transit_param[ii].force_kepler = self.force_kepler
                 if abs(self.transit_param[ii].i-90)<0.1:
                     # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
                     self.transit_param[ii].i = 89.9
@@ -107,6 +132,7 @@ class SimpleModel(kgs.Model):
             self._targets = [None, None]
             self._times = [None, None]
             self._times_norm = [None, None]
+            noise_est = [None,None]
             for ii in range(2):
                 self.poly_vals[ii][0] = 1
                 self._targets[ii] = cp.mean(data.transits[0].data[ii].data, axis=1)
@@ -115,6 +141,7 @@ class SimpleModel(kgs.Model):
                 self._times[ii] = data.transits[0].data[ii].times.get()/3600
                 t=self._times[ii]
                 self._times_norm[ii] = 2*(t - t.min())/(t.max() - t.min()) - 1
+                noise_est[ii] = ariel_numerics.estimate_noise_cp(self._targets[ii])
 
             # Step 1
             for ii in range(2):
@@ -214,31 +241,64 @@ class SimpleModel(kgs.Model):
                         self.pred = [None]*2
                         for ii in range(2):
                             self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                            cost += self.weights[ii]*np.sqrt(np.mean( (self.pred[ii]-self._targets[ii])**2 ))
+                            cost += np.sum( (self.pred[ii]-self._targets[ii])**2/noise_est[ii] )
                         return cost
                     #res = scipy.optimize.minimize(cost,res.x)        
                     self.cost_list.append(cost(res.x))
                 #print(res.x)
                 
             else:
+                #print(noise_est)
                 def cost(x, do_plot = False):
                     self._from_x(x)
                     cost = 0
                     self.pred = [None]*2
                     for ii in range(2):
                         self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                        cost += self.weights[ii]*np.sqrt(np.mean( (self.pred[ii]-self._targets[ii])**2 ))
-                    return cost
+                        cost += np.sum( (self.pred[ii]-self._targets[ii])**2 ) / noise_est[ii]**2
+                        #cost += np.sqrt( np.mean((self.pred[ii]-self._targets[ii])**2))
+                    if self.do_regularization:
+                        xx = (x-reg_mu)[:,None]
+                        cost += xx.T @ reg_prec @ xx
+                    if self.rescale_cost:
+                        cost = np.sqrt(cost) * np.mean(noise_est) / np.sqrt(1200)
+                    else:
+                        cost = cost * (np.mean(noise_est) / np.sqrt(1200))**2
+                    return float(cost)
                 self.cost_list=[]
                 for o in self.order_list:
-                    self.poly_order = o#self.poly_order_step2
+                    self.poly_order = o#self.poly_order_step2                    
                     for ii in range(2):
                         new_vals = np.zeros(self.poly_order+1)
                         inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
                         new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
                         self.poly_vals[ii] = new_vals
                     x0 = self._to_x()  
-                    res = scipy.optimize.minimize(cost,x0)                    
+                    (reg_cov,reg_mu) = self._cov_mu()
+                    reg_prec = np.linalg.inv(reg_cov)
+                    lb = -np.inf*np.ones(len(x0))
+                    ub = np.inf*np.ones(len(x0))                    
+                    lb[1]=-5-0.001*o
+                    ub[1]=0+0.001*o
+                    lb[2]=-1-0.001*o                    
+                    ub[2]=1+0.001*o
+                    #lb[3]=-0.5-0.001*o                    
+                    ub[3]=90
+                    while True:
+                        self._from_x(x0)
+                        try:
+                            res = scipy.optimize.minimize(cost,x0)                           
+                        except:
+                            self._from_x(x0)
+                            res = scipy.optimize.minimize(cost,x0, bounds=zip(lb,ub))      
+                        if res.x[3]>90:
+                            res.x[3] = 90-res.x[3]
+                            x0 = res.x
+                        else:
+                            break
+                    # while res.x[3]>90:
+                    #     res.x[3] = 90-res.x[3]
+                    #     res = scipy.optimize.minimize(cost,res.x)               
                     self.cost_list.append(cost(res.x))
 
 
@@ -373,10 +433,11 @@ class SimpleModelChainer(kgs.Model):
                     break
         
         result.diagnostics['suspicious_AIRS'] = result.diagnostics['simple_residual_diff_AIRS']>self.ok_threshold
+        result.diagnostics['suspicious_FGS'] = result.diagnostics['simple_residual_diff_FGS']>self.ok_threshold
         
-        kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0, 'simple_t0_AIRS', 11, [2.5, 5])
-        kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0-result.diagnostics['transit_params'][0].t0, 'simple_t0_diff', 11, [-0.04,0.04])
-        #kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_FGS'], 'simple_residual_diff_FGS', 12, [0.95,1.05])
+        #kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0, 'simple_t0_AIRS', 11, [2.5, 5])
+        #kgs.sanity_check(lambda x:x, result.diagnostics['transit_params'][1].t0-result.diagnostics['transit_params'][0].t0, 'simple_t0_diff', 11, [-0.1,0.1])
+        kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_FGS'], 'simple_residual_diff_FGS', 12, [0.95,1.1])
         kgs.sanity_check(lambda x:x, result.diagnostics['simple_residual_diff_AIRS'], 'simple_residual_diff_AIRS', 13, [0.95,1.15])
         
         return result

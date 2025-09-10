@@ -298,7 +298,7 @@ class SanityCheckValue:
         self.seen_all = []
 
 # Perform a sanity check; this function is used throughout the data loading and modeling functions.
-def sanity_check(f,to_check,name,code,limit):
+def sanity_check(f,to_check,name,code,limit,raise_error=True):
     # f: function to apply to to_check
     # to_check: value to check
     # name: label for the sanity check
@@ -308,7 +308,7 @@ def sanity_check(f,to_check,name,code,limit):
         if not name in sanity_checks:
             sanity_checks[name] = SanityCheckValue(name,code,limit)
         value = float(to_cpu(f(to_check)))
-        if not sanity_checks_without_errors:
+        if not sanity_checks_without_errors and raise_error:
             if value > limit[1]:
                 raise ArielException(code+0.5,name + ' too high: ' + str(value) + '>' + str(limit[1]))
             if value < limit[0]:
@@ -684,6 +684,10 @@ class Model(BaseClass):
             except Exception as err:
                 print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
                 raise
+            for d in result:
+                for k,v in d.diagnostics['sanity_checks_par'].items():
+                    for s in v.seen_all:
+                        sanity_check(lambda x:x, s, v.name, v.code, v.limit, raise_error=False)
             
         else:
             result = []

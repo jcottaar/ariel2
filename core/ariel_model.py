@@ -204,27 +204,49 @@ class Fudger2(kgs.Model):
 class Fudger3(kgs.Model):
     bias_a: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     bias_b: list = field(init=True, default_factory=lambda:[0.,0.])    
-    sigma_base_addition = 0.
-    sigma_var_scaling = 0.
+    sigma_offset: list = field(init=True, default_factory=lambda:[0.,0.])
+    sigma_fudge_FGS = 1.
+    sigma_fudge_AIRS_mean = 1.
+    sigma_fudge_AIRS_var = 1.
+    
+    sigma_fudge_based_on_AIRS_var: list = field(init=True, default_factory=lambda:[0.,0.])
+    fudge_based_on_AIRS_var = False
+    
+    adjust_based_on_u: list = field(init=True, default_factory=lambda:[0.,0.])
+    do_adjust_based_on_u = False
+    
+    sigma_fudge_multi = 1.
+    do_fudge_multi = False
 
     
     model: kgs.Model = field(init=True, default=None)
     
-    _var_values = None
     _cached_planet_id = None
     _cached_result = None
     _disable_transforms = False
+    _AIRS_var_values = None
+    _FGS_u = None
+    _AIRS_u = None
+    _is_multi_transit = None
     
     def _to_x(self):
-        the_list = self.bias_a + self.bias_b + [self.sigma_base_addition, self.sigma_var_scaling]        
+        the_list = self.bias_a + self.bias_b + self.sigma_offset + [self.sigma_fudge_FGS, self.sigma_fudge_AIRS_mean, self.sigma_fudge_AIRS_var] + self.sigma_fudge_based_on_AIRS_var + self.adjust_based_on_u + [self.sigma_fudge_multi]
         return np.reshape(the_list, (-1,))
     def _from_x(self,x):
         self.bias_a[0] = x[0]
         self.bias_a[1] = x[1]
         self.bias_b[0] = x[2]
         self.bias_b[1] = x[3]
-        self.sigma_base_addition = x[4]
-        self.sigma_var_scaling = x[5]
+        self.sigma_offset[0] = x[4]
+        self.sigma_offset[1] = x[5]
+        self.sigma_fudge_FGS = x[6]
+        self.sigma_fudge_AIRS_mean = x[7]
+        self.sigma_fudge_AIRS_var = x[8]
+        self.sigma_fudge_based_on_AIRS_var[0] = x[9]
+        self.sigma_fudge_based_on_AIRS_var[1] = x[10]
+        self.adjust_based_on_u[0] = x[11]
+        self.adjust_based_on_u[1] = x[12]
+        self.sigma_fudge_multi = x[13]
         assert np.all(self._to_x() == x)
         
     def alter_mats(self, mats):
@@ -233,9 +255,29 @@ class Fudger3(kgs.Model):
         y_pred[:,0] += self.bias_b[0]
         y_pred[:,1:] *= self.bias_a[1]
         y_pred[:,1:] += self.bias_b[1]
-        cov_pred += self.sigma_base_addition**2
-        cov_pred += self.sigma_var_scaling**2 * cp.eye(283,283)[None,:,:] * self._var_values[:,None,None]
         
+        if self.do_adjust_based_on_u:
+            y_pred[:,0] += self.adjust_based_on_u[0] * self._FGS_u
+            y_pred[:,1:] += self.adjust_based_on_u[1] * self._AIRS_u[:,None]
+        
+            
+        cov_pred[:,0,0] += self.sigma_offset[0]**2
+        cov_pred[:,1:,1:] += self.sigma_offset[1]**2
+        cov_pred[:,0,:] *= self.sigma_fudge_FGS
+        cov_pred[:,:,0] *= self.sigma_fudge_FGS
+        AIRS_mean = np.mean(cov_pred[:,1:,1:], axis=(1,2))
+        AIRS_var = cov_pred[:,1:,1:]-AIRS_mean[:,None,None]
+        AIRS_mean *= self.sigma_fudge_AIRS_mean**2
+        AIRS_var *= self.sigma_fudge_AIRS_var**2
+        cov_pred[:,1:,1:] = AIRS_var+AIRS_mean[:,None,None]
+        
+        if self.fudge_based_on_AIRS_var:
+            cov_pred[:,0,0] += self.sigma_fudge_based_on_AIRS_var[0]**2*self._AIRS_var_values**2
+            idx = np.arange(1, 283)
+            cov_pred[:,idx,idx] += (self.sigma_fudge_based_on_AIRS_var[1]**2*self._AIRS_var_values**2)[:,None]
+            
+        if self.do_fudge_multi:
+            cov_pred[self._is_multi_transit,:,:] *= self.sigma_fudge_multi
         #cov_pred[:,1:,1:] *= self.sigma_fudge_AIRS_mean**2
         #cov_pred[:,:,1:] *= self.sigma_fudge_AIRS_mean
     
@@ -248,13 +290,6 @@ class Fudger3(kgs.Model):
         self._disable_transforms = True
         inferred_data = self.infer(train_data)
         self._disable_transforms = False
-        
-        # print(self._var_values)
-        # print(cp.array([np.std(d.diagnostics['training_spectrum']) for d in inferred_data]))
-        # import matplotlib.pyplot as plt
-        # plt.figure()
-        # plt.scatter(self._var_values.get(), cp.array([np.std(d.diagnostics['training_spectrum']) for d in inferred_data]).get())
-        # plt.axline((0,0), slope=1, color='black')
         #print(kgs.score_metric(inferred_data,train_data))
         mats = kgs.data_to_mats(inferred_data,train_data)
         
@@ -278,6 +313,7 @@ class Fudger3(kgs.Model):
         
     
     def _infer(self,data):
+        self._is_multi_transit = cp.array([len(d.transits)>1 for d in data])
         if not self._cached_planet_id is None and [d.planet_id for d in data]==self._cached_planet_id:
             data = copy.deepcopy(self._cached_result)
         else:
@@ -285,9 +321,11 @@ class Fudger3(kgs.Model):
             if self._cached_planet_id is None:
                 self._cached_result = copy.deepcopy(data)
                 self._cached_planet_id = [d.planet_id for d in data]
-        
-        self._var_values = cp.array([cp.std(d.spectrum) for d in data])
+                
         mats = kgs.data_to_mats(data,data)
+        self._AIRS_var_values = cp.array([np.std(d.spectrum) for d in data])
+        self._FGS_u = cp.array([d.diagnostics['transit_params_gp'][0].u[0] for d in data])
+        self._AIRS_u = cp.array([d.diagnostics['transit_params_gp'][1].u[0] for d in data])        
         if not self._disable_transforms:
             self.alter_mats(mats)
         kgs.mats_to_data(data,copy.deepcopy(data),mats)
@@ -298,7 +336,6 @@ class Fudger3(kgs.Model):
 class MultiTransit(kgs.Model):
     
     model: kgs.Model = field(init=True, default=None)
-    
     
     def _convert_data(self, data):
         data_run = []
@@ -338,7 +375,7 @@ class MultiTransit(kgs.Model):
                 assert(len(ind)==2)
                 this_data1 = data_run[ind[0][0]]
                 this_data2 = data_run[ind[1][0]]
-                #this_data1.spectrum, this_data1.spectrum_cov = combine_measurements(this_data1.spectrum, this_data1.spectrum_cov, this_data2.spectrum, this_data2.spectrum_cov)                
+                #this_data1.spectrum, this_data1.spectrum_cov = combine_measurements(this_data1.spectrum, this_data1.spectrum_cov, this_data2.spectrum, this_data2.spectrum_cov)             
                 this_data1.spectrum = this_data1.spectrum/2 + this_data2.spectrum/2
                 this_data1.spectrum_cov = this_data1.spectrum_cov/4 + this_data2.spectrum_cov/4
                 data_output.append(this_data1)
