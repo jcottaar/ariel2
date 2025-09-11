@@ -210,10 +210,10 @@ class Fudger3(kgs.Model):
     sigma_fudge_AIRS_var = 1.
     
     sigma_fudge_based_on_AIRS_var: list = field(init=True, default_factory=lambda:[0.,0.])
-    fudge_based_on_AIRS_var = False
+    fudge_based_on_AIRS_var = True
     
     adjust_based_on_u: list = field(init=True, default_factory=lambda:[0.,0.])
-    do_adjust_based_on_u = False
+    do_adjust_based_on_u = True
     
     sigma_fudge_multi = 1.
     do_fudge_multi = False
@@ -385,7 +385,7 @@ class MultiTransit(kgs.Model):
 
 
 def baseline_model():
-    model = Fudger2(model=ariel_gp.PredictionModel())
+    model = Fudger3(model=ariel_gp.PredictionModel())
     model.model.starter_model.train(kgs.load_all_train_data())
     model.model.run_in_parallel = True
     return model

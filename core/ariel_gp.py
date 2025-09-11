@@ -17,7 +17,7 @@ import scipy as sp
 import kaggle_support as kgs # support and loading functions
 import copy
 import gp # my own GP library
-import ariel_simple
+import ariel_simple2
 import ariel_transit
 import ariel_numerics
 
@@ -463,7 +463,7 @@ class PredictionModel(kgs.Model):
     def __init__(self):
         super().__init__()
         self.model_options = ModelOptions()
-        self.starter_model = ariel_simple.SimpleModelChainer()
+        self.starter_model = ariel_simple2.SimpleModelChainer()
 
     def _train(self, train_data):
         self.starter_model.train(train_data)
@@ -668,6 +668,7 @@ class TransitModel(gp.Model):
         self.common_parameters = [0,1,2,3] 
         self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1., 1., 1.]        
         self.AIRS_u_slopes = [[0,0]]
+        self.cov_override, self.mu_override = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning28.pickle')
         #self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
 
     

@@ -36,10 +36,10 @@ class SimpleModel(kgs.Model):
     # Configuration - step 2
     do_step2 = True
     #weights: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
-    order_list: list = field(init=True, default_factory=lambda:[0,1,2,3]) 
+    order_list: list = field(init=True, default_factory=lambda:[1,2,3]) 
     unlock_t0: bool = field(init=True, default=True)
     new_solver: bool = field(init=True, default=False)
-    do_regularization:  bool = field(init=True, default=False)
+    do_regularization:  bool = field(init=True, default=True)
     rescale_cost:  bool = field(init=True, default=True)
     
     # internal
