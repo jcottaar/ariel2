@@ -336,6 +336,7 @@ class Fudger3(kgs.Model):
 class MultiTransit(kgs.Model):
     
     model: kgs.Model = field(init=True, default=None)
+    variance_fudge = 1.
     
     def _convert_data(self, data):
         data_run = []
@@ -377,7 +378,7 @@ class MultiTransit(kgs.Model):
                 this_data2 = data_run[ind[1][0]]
                 #this_data1.spectrum, this_data1.spectrum_cov = combine_measurements(this_data1.spectrum, this_data1.spectrum_cov, this_data2.spectrum, this_data2.spectrum_cov)             
                 this_data1.spectrum = this_data1.spectrum/2 + this_data2.spectrum/2
-                this_data1.spectrum_cov = this_data1.spectrum_cov/4 + this_data2.spectrum_cov/4
+                this_data1.spectrum_cov = self.variance_fudge * (this_data1.spectrum_cov/4 + this_data2.spectrum_cov/4)
                 data_output.append(this_data1)
                 
         return data_output

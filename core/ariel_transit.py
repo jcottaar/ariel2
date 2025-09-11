@@ -142,7 +142,7 @@ class TransitParams(kgs.BaseClass):
         params.w = self.w   
         params.limb_dark = self.limb_dark
         params.u = self.u
-        if self.P<=0 or self.sma<=0 or any(self.u)<=0:
+        if self.P<=0 or self.sma<=0:
             raise kgs.ArielException(6, 'Bad transit parameters')
         if self.Rp<0:
             params.rp *= -1
