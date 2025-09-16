@@ -383,6 +383,69 @@ class MultiTransit(kgs.Model):
                 
         return data_output
 
+@dataclass
+class SanityWrapper(kgs.Model):
+    
+    model: kgs.Model = field(init=True, default=None)
+    action = 'do_nothing'
+    max_errors = 1
+    
+    logged_errors: list = field(init=True, default_factory=list)
+        
+    def _train(self,train_data):
+        self.model.train(train_data)
+        self.state=1
+        
+    def infer(self,test_data):
+        if self.action == 'explode':
+            print('EXPLODING!!!!!!')
+        inferred_data = super().infer(test_data)
+        for d in inferred_data:
+            if 'logged_error' in d.diagnostics.keys():
+                self.logged_errors.append(d.diagnostics['logged_error'])
+                
+        if len(self.logged_errors)>self.max_errors:
+            raise kgs.ArielException(len(self.logged_errors)/2, 'Too many diagnostics failures')
+                
+        all_spectra = np.array([d.spectrum for d in inferred_data])
+        spectrum_mean = np.nanmean(all_spectra,0)
+        spectrum_std = np.nanstd(all_spectra,0)
+        print(spectrum_mean.shape, spectrum_std.shape)
+        for d in inferred_data:
+            if np.isnan(d.spectrum[0]):
+                assert self.action == 'replace_by_mean'
+                d.spectrum = spectrum_mean
+                d.spectrum_cov = np.diag(spectrum_std**2)
+        return inferred_data
+        
+    
+    def _infer_single(self,data):        
+        
+        try:
+            kgs.sanity_checks_active = True
+            kgs.sanity_checks_without_errors = False
+            return self.model.infer([data])[0]
+        except kgs.ArielException as err:
+            data.diagnostics['logged_error'] = err
+            match self.action:
+                case 'do_nothing':
+                    kgs.sanity_checks_without_errors = True
+                    return self.model.infer([data])[0]
+                case 'explode':
+                    raise 'BLOCKED'
+                    data.spectrum = 1e8*np.ones(283)
+                    data.spectrum_cov = 1e8*np.eye(283)
+                    return data
+                case 'replace_by_mean':
+                    data.spectrum = np.nan*np.ones(283)
+                    data.spectrum_cov = np.nan*np.eye(283)
+                    return data
+                case 'raise':
+                    raise err
+                case _:
+                    raise Exception('Bad action')
+    
+
 
 def baseline_model():
     model = Fudger3(model=ariel_gp.PredictionModel())

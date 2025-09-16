@@ -669,7 +669,7 @@ class Model(BaseClass):
 
     def _infer(self, test_data):
         # Subclass must implement this OR _infer_single
-        if self.run_in_parallel and not disable_any_parallel:  
+        if self.run_in_parallel and not disable_any_parallel and multiprocess.current_process().name == "MainProcess":  
             clear_gpu()
             dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads))
             try:

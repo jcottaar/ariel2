@@ -32,6 +32,7 @@ class SimpleModel(kgs.Model):
     rp_init: list = field(init=True, default_factory=lambda:[0.05,0.05]) # FGS, AIRS
     u_init: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
     force_kepler = False
+    expose_Rp_fudge = False
     
     # Configuration - step 2
     do_step2 = True
@@ -40,6 +41,7 @@ class SimpleModel(kgs.Model):
     unlock_t0: bool = field(init=True, default=True)
     new_solver: bool = field(init=True, default=False)
     do_regularization:  bool = field(init=True, default=True)
+    reg_file = kgs.calibration_dir + 'transit_model_tuning9.pickle'
     rescale_cost:  bool = field(init=True, default=True)
     
     # internal
@@ -69,7 +71,10 @@ class SimpleModel(kgs.Model):
     
     def _from_x(self, x):
         x=list(x)
-        len_xt = 7#len(self.transit_param[0].to_x())
+        if self.transit_param[0].expose_Rp_fudge:
+            len_xt = 8
+        else:
+            len_xt = 7#len(self.transit_param[0].to_x())
         #print(len_xt)
         self.transit_param[0].from_x(x[:len_xt])
         self.transit_param[1].from_x(x[:4]+x[len_xt:2*len_xt-4])         
@@ -88,7 +93,7 @@ class SimpleModel(kgs.Model):
         inds_self = [0,1,2,3,5,6,8,9,-1]
         inds_file = [0,2,3,4,5,7,6,8,1]
         
-        cov_file, mu_file = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning9.pickle')    
+        cov_file, mu_file = kgs.dill_load(self.reg_file)    
         
         cov = np.diag(1e4*np.ones(len(self._to_x())))
         mu = np.zeros(len(self._to_x()))
@@ -119,6 +124,7 @@ class SimpleModel(kgs.Model):
             for ii in range(2):
                 self.transit_param[ii] = copy.deepcopy(data.transit_params)        
                 self.transit_param[ii].force_kepler = self.force_kepler
+                self.transit_param[ii].expose_Rp_fudge = self.expose_Rp_fudge
                 if abs(self.transit_param[ii].i-90)<0.1:
                     # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
                     self.transit_param[ii].i = 89.9

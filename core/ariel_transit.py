@@ -26,6 +26,7 @@ class TransitParams(kgs.BaseClass):
     t0:  float = field(init=True, default=None) # Transit midpoint in hours.
     sma: float = field(init=True, default=None) # Semi-major axis in stellar radii (Rs), showing the orbital distance relative to the stellar radii.
     i:   float = field(init=True, default=None) # Orbital inclination in degrees.
+    Rp_fudge:float = field(init=True, default=1.)
     limb_dark: str = field(init=True, default = 'quadratic')
     u: np.ndarray = field(init=True, default=None) # limb darkening
     
@@ -35,6 +36,7 @@ class TransitParams(kgs.BaseClass):
     expose_e_and_w: bool =  field(init=True, default=False)
     force_kepler: bool = field(init=True, default=False)
     force_inc = None
+    expose_Rp_fudge: bool = field(init=True, default=False)
     
     # Modeling configuration
     supersample_factor = 1
@@ -87,6 +89,8 @@ class TransitParams(kgs.BaseClass):
         if self.force_kepler:
             beta = self.beta_store
         x = [self.t0, alpha, beta, self.i, self.Rp] + list(self.u)
+        if self.expose_Rp_fudge:
+            x.append(self.Rp_fudge)
         return x
 
     def from_x(self, x):
@@ -99,7 +103,11 @@ class TransitParams(kgs.BaseClass):
             self.beta_store = x[2]
         self.i  = x[3]
         self.Rp = x[4]
-        self.u  = np.array(x[5:])
+        if self.expose_Rp_fudge:
+            self.u  = np.array(x[5:-1])
+            self.Rp_fudge = x[-1]
+        else:
+            self.u  = np.array(x[5:])
 
         # Reconstruct P and sma from (alpha, beta)
         K = self._K_hours()
@@ -134,7 +142,7 @@ class TransitParams(kgs.BaseClass):
         params = batman.TransitParams()
         params.t0 = self.t0
         params.per = self.P
-        params.rp = self.Rp
+        params.rp = self.Rp * self.Rp_fudge
         params.a = self.sma
         params.inc = self.i
         params.ecc = self.e
@@ -150,6 +158,7 @@ class TransitParams(kgs.BaseClass):
         res = model.light_curve(params)  
         if self.Rp<0:
             res = 2-res
+        res = 1-self.Rp_fudge**-2 * (1-res)
         assert not np.any(np.isnan(res))
         return res
     

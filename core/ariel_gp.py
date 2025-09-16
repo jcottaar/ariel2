@@ -39,6 +39,10 @@ class ModelOptions(kgs.BaseClass):
     use_old_transit_depth_prior = False
     transit_depth_alpha = 1. # 1 = tuned based on raw, 0 = tuned based on PCA rescaled
     new_transit_depth_FGS_sigma_override = 0.0001
+    transit_pca_components = None
+    transit_pca_variances = None
+    FGS_transit_scaling = 1.
+    AIRS_transit_scaling = 1.
  
     # Configuration of the drift prior
     hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
@@ -239,6 +243,17 @@ def define_prior(obs, model_options, data):
         if not model_options.new_transit_depth_FGS_sigma_override is None:
             model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
         model_FGS.model.sigma *= model_options.FGS_AIRS_decoupling
+        
+    model_FGS.scaling_factor *= model_options.FGS_transit_scaling
+    model_AIRS.scaling_factor *= model_options.AIRS_transit_scaling
+    
+    if not model_options.transit_pca_components is None:
+        model_variation_pca = gp.ParameterScaler()
+        model_variation_pca.scaler = 1e-4
+        model_variation_pca.model = gp.FixedBasis()
+        model_variation_pca.model.basis_functions = model_options.transit_pca_components.T
+        model_variation_pca.model.regularization_variance = model_options.transit_pca_variances
+        model_variation_pca.model.features = ['wavelength']     
    
     model_variation_non_pca = ModelSplitSensors()
     mm = dict()
@@ -249,6 +264,8 @@ def define_prior(obs, model_options, data):
     m['variation'] = gp.CompoundNamed()
     mm = dict()
     mm['non_pca'] = model_variation_non_pca
+    if not model_options.transit_pca_components is None:
+        mm['pca'] = model_variation_pca
     m['variation'].m=mm
     m['variation'].update_scaling = model_options.update_transit_variation_sigma # Determine if we tune the magnitude of the variation, essentially scaling all sigma values within
     # Create the final transit depth model
@@ -459,6 +476,8 @@ class PredictionModel(kgs.Model):
     
     # Diagnostics
     results = None
+    
+    bad_sanity = False
 
     def __init__(self):
         super().__init__()
@@ -518,33 +537,35 @@ class PredictionModel(kgs.Model):
             cov[1:,1:] = self.fixed_AIRS_sigma**2
 
         # Sanity checks
-#         kgs.sanity_check(np.mean, pred, 'pred_mean', 1, [0, 0.15])
-#         kgs.sanity_check(np.std, pred, 'pred_std', 2, [0, 0.02])
-#         if self.model_options.n_samples_sigma_est>50 and kgs.sanity_checks_active:
-#             sigma = np.sqrt(np.diag(cov))
-#             kgs.sanity_check(np.min, sigma, 'sigma_min', 3, [4e-6, 0.002])
-#             kgs.sanity_check(np.max, sigma, 'sigma_max', 4, [7e-6, 0.002])
-#         results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].sanity_check('FGS_')
-#         results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].sanity_check('AIRS_')
-#         kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].t0, 't0_diff', 10, [-0.05,0.05])
+        kgs.sanity_check(np.mean, pred, 'pred_mean', 1, [0, 0.15])
+        kgs.sanity_check(np.std, pred, 'pred_std', 2, [0, 0.02])
+        if self.model_options.n_samples_sigma_est>50 and kgs.sanity_checks_active:
+            sigma = np.sqrt(np.diag(cov))
+            kgs.sanity_check(np.min, sigma, 'sigma_min', 3, [4e-6, 0.002])
+            kgs.sanity_check(np.max, sigma, 'sigma_max', 4, [7e-6, 0.002])
+        results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].sanity_check('FGS_')
+        results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].sanity_check('AIRS_')
+        kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].t0, 't0_diff', 10, [-0.05,0.05])
+        if self.bad_sanity:
+            kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['main'].m['transit'].transit_params[0][1].t0, 't0_diff_alt', 100, [0.,0.05])
         
 
-#         obs_noise = copy.deepcopy(results['obs'])
-#         obs_noise.labels = obs_noise.labels - results['model_mean'].m['signal'].get_prediction(obs_noise)
-#         noise_AIRS = obs_noise.export_matrix(True)
-#         noise_FGS = obs_noise.export_matrix(False)
+        obs_noise = copy.deepcopy(results['obs'])
+        obs_noise.labels = obs_noise.labels - results['model_mean'].m['signal'].get_prediction(obs_noise)
+        noise_AIRS = obs_noise.export_matrix(True)
+        noise_FGS = obs_noise.export_matrix(False)
         
-#         residual = kgs.rms(noise_FGS)
-#         residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(noise_FGS)).get()
-#         ratio = residual/residual_filtered
-#         kgs.sanity_check(lambda x:x, ratio, 'residual_diff_FGS', 9, [0.95,1.05])
+        residual = kgs.rms(noise_FGS)
+        residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(noise_FGS)).get()
+        ratio = residual/residual_filtered
+        kgs.sanity_check(lambda x:x, ratio, 'residual_diff_FGS', 9, [0.95,1.1])
         
-#         for ii in range(5):
-#             this_part = np.mean(noise_AIRS[:,50*ii:50*(ii+1)],1)
-#             residual = kgs.rms(this_part)
-#             residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(this_part))
-#             ratio = residual/residual_filtered
-#             kgs.sanity_check(lambda x:x, ratio, 'residual_diff_AIRS', 11, [0.95,1.1])
+        for ii in range(5):
+            this_part = np.mean(noise_AIRS[:,50*ii:50*(ii+1)],1)
+            residual = kgs.rms(this_part)
+            residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(this_part))
+            ratio = residual/residual_filtered
+            kgs.sanity_check(lambda x:x, ratio, 'residual_diff_AIRS', 11, [0.95,1.1])
             
         
         
