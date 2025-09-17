@@ -407,7 +407,9 @@ class SimpleModelChainer(kgs.Model):
                     model.new_solver = True
                 elif ii>2:
                     model.new_solver = False
+                    old_Ts = dat.transit_params.Ts
                     dat.transit_params = self._train_data[ii-2].transit_params
+                    dat.transit_params.Ts = old_Ts
                 dat = self.model.infer([dat])[0]
                 data_results.append(dat)
                 score_results.append(max(dat.diagnostics['simple_residual_diff_AIRS'],dat.diagnostics['simple_residual_diff_FGS']))
