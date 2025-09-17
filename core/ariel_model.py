@@ -1,6 +1,7 @@
 import kaggle_support as kgs
 import ariel_simple
 import ariel_gp
+import ariel_pca
 from dataclasses import dataclass, field, fields
 import scipy
 import numpy as np
@@ -448,9 +449,10 @@ class SanityWrapper(kgs.Model):
 
 
 def baseline_model():
-    model = Fudger3(model=ariel_gp.PredictionModel())
-    model.model.starter_model.train(kgs.load_all_train_data())
-    model.model.run_in_parallel = True
+    model = Fudger3(model=ariel_pca.PCA(model=ariel_gp.PredictionModel()))
+    model.model.model_options_link = model.model.model.model_options
+    model.model.model.starter_model.train(kgs.load_all_train_data())
+    model.model.model.run_in_parallel = True
     return model
 
 

@@ -1308,6 +1308,7 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
             prev_step = hparam_step
             hparam_new = np.exp(log_hparam_new) 
             model.set_hyperparameters(hparam_new)          
+            #print('Hyperparameters from ', hparam_old, ' to ',hparam_new)
                 
         # Parameter update
         #print('before', log_likelihood_given_parameters(model)

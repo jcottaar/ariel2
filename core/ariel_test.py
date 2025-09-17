@@ -45,16 +45,19 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
 def run_model_test(regenerate_reference=False):
     kgs.debugging_mode = 2
     models = dict()
-    models['simple'] = ariel_simple.SimpleModel()
+    models['simple'] = ariel_simple.SimpleModel()    
+    models['simple'].run_in_parallel = not regenerate_reference
     models['baseline'] = ariel_model.baseline_model()
+    models['baseline'].model.n_components = 1
+    models['baseline'].model.model.run_in_parallel = not regenerate_reference
     train_data = kgs.load_all_train_data()
     for name,model in models.items():
         data = copy.deepcopy(train_data[38:41])
         for d in data:
             copy.deepcopy(d).load_to_step(5, ariel_load.default_loaders())
-        model.run_in_parallel = not regenerate_reference
-        try: model.model.run_in_parallel = not regenerate_reference
-        except: pass
+        #model.run_in_parallel = not regenerate_reference
+        #try: model.model.run_in_parallel = not regenerate_reference
+        #try: model.model.modrun_in_parallel = not regenerate_reference
         model.train(data)
         data = model.infer(data)
         if regenerate_reference:

@@ -33,6 +33,8 @@ class ModelOptions(kgs.BaseClass):
 
     # Configuration of the transit depth prior
     update_transit_variation_sigma = True # whether to update the magnitude of the transit depth variation; this effectively makes the fit less aggressive if the transit depth seems flat
+    update_transit_pca_sigma = False
+    update_transit_nonpca_sigma = False
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
     transit_prior_info = 0
     FGS_AIRS_decoupling = 1
@@ -254,6 +256,7 @@ def define_prior(obs, model_options, data):
         model_variation_pca.model.basis_functions = model_options.transit_pca_components.T
         model_variation_pca.model.regularization_variance = model_options.transit_pca_variances
         model_variation_pca.model.features = ['wavelength']     
+        model_variation_pca.update_scaling = model_options.update_transit_pca_sigma
    
     model_variation_non_pca = ModelSplitSensors()
     mm = dict()
@@ -268,6 +271,8 @@ def define_prior(obs, model_options, data):
         mm['pca'] = model_variation_pca
     m['variation'].m=mm
     m['variation'].update_scaling = model_options.update_transit_variation_sigma # Determine if we tune the magnitude of the variation, essentially scaling all sigma values within
+    m['variation'].m['non_pca'].update_scaling = model_options.update_transit_nonpca_sigma 
+    
     # Create the final transit depth model
     transit_depth_model = gp.CompoundNamed()
     transit_depth_model.m = m

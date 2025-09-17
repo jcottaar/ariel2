@@ -15,9 +15,10 @@ class PCA(kgs.Model):
     model_options_link: ariel_gp.ModelOptions = field(init=True, default=None)
     learn_pca_during_training: bool = field(init=True, default=True)   
     
-    n_components: int = field(init=True, default=2)
+    n_components: int = field(init=True, default=5)
     ignore_FGS = False
-    rescale = False
+    rescale = True
+    rescale_gamma = 0.5
     filter_ratio = 1.
     
     FGS_target = 0.0001
@@ -43,9 +44,11 @@ class PCA(kgs.Model):
         inds = np.argsort(std_vals)
         X = X[inds[np.round((1-self.filter_ratio)*X.shape[0]).astype(int):],:]
         if self.rescale:
-            X = X / np.std(X,1)[:,None]
+            X = X / np.std(X,1)[:,None]**self.rescale_gamma
+        #print('b', np.std(X[:,0])/np.std(X[:,1:]))
         X[:,0] = X[:,0]/np.std(X[:,0])*self.FGS_target
         X[:,1:] = X[:,1:]/np.std(X[:,1:])*self.AIRS_target
+        #print('a', np.std(X[:,0])/np.std(X[:,1:]))
        
         U, S, Vh = np.linalg.svd(X, full_matrices=False)
 
@@ -90,10 +93,10 @@ class PCA(kgs.Model):
         #plt.figure()
         #plt.plot(wavelengths, components[:5, :].T)   # first 5 PCs as spectra vs wavelength
 
-        plt.figure()
+        #plt.figure()
         #plt.plot(1 - np.cumsum(explained_variance_ratio)[:20])  # leftover variance (like your original)
-        plt.semilogy(explained_variance_ratio[:20])
-        plt.pause(0.001)
+        #plt.semilogy(explained_variance_ratio[:20])
+        #plt.pause(0.001)
         #(1 - np.cumsum(explained_variance_ratio)[:20])[0]
         #kgs.rms(X),kgs.rms(X-weights@components)
 
