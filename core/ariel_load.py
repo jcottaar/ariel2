@@ -624,6 +624,7 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
     cutoff_sum=0
     use_noise_est_naive = False
     sequential_fit = False
+    handle_mean = True
     #alpha=-0.5
     
     # Diagnostics
@@ -711,7 +712,7 @@ class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
             if self.use_noise_est_naive:
                 noise_est = noise_est_naive[:,i_wavelength]
             
-            mean_handled = False
+            mean_handled =  not self.handle_mean
             isnan = cp.isnan(dataa[0,:,i_wavelength])
             while True:
 

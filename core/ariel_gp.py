@@ -519,7 +519,7 @@ class PredictionModel(kgs.Model):
             remove_ingress_egress(test_data.transits[0].data[0],test_data.diagnostics['transit_params'][0])
             remove_ingress_egress(test_data.transits[0].data[1],test_data.diagnostics['transit_params'][1])
         
-        # Construct and fithe GP
+        # Construct and fit the GP
         results = fit_gp(test_data, model_options=self.model_options, plot_final=self.plot_final, plot_simple=self.plot_simple)       
         self.results = results
 
@@ -687,6 +687,7 @@ class TransitModel(gp.Model):
     fit_slopes = True
     cov_override = None
     mu_override = None
+    TS_slopes = None
     
     
     def __post_init__(self):
@@ -913,7 +914,12 @@ class TransitModel(gp.Model):
             prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
                 prior_matrices.prior_precision_matrix , gp.sparse_matrix(np.linalg.inv(cov))
                 ], format=gp.sparse_matrix_str )
-            prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, mu])
+            if not self.TS_slopes is None:
+                mu += self.TS_slopes * self.transit_params[0][0].Ts
+                assert self.transit_params[0][0].Ts == self.transit_params[0][1].Ts
+            prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, mu])            
+                
+            #print('prior_mean', prior_matrices.prior_mean)
         prior_matrices.number_of_parameters = self.number_of_parameters
         return prior_matrices
 
