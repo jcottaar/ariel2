@@ -475,6 +475,8 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
                 data_pca = cp.reshape(data.data, (-1,1024,1))
                 wavelength_ids = [0]
             else:
+                #data_pca = copy.deepcopy(data.data)
+                #inpaint_vectorized(data_pca)
                 data_pca = data.data
                 wavelength_ids = np.arange(1,283)
             data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
