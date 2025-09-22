@@ -33,6 +33,7 @@ class SimpleModel(kgs.Model):
     u_init: list = field(init=True, default_factory=lambda:[[0.2,0.1],[0.2,0.1]]) # for FGS and AIRS
     force_kepler = False
     expose_Rp_fudge = False
+    supersample_factor = 1
     
     # Configuration - step 2
     do_step2 = True
@@ -125,6 +126,7 @@ class SimpleModel(kgs.Model):
                 self.transit_param[ii] = copy.deepcopy(data.transit_params)        
                 self.transit_param[ii].force_kepler = self.force_kepler
                 self.transit_param[ii].expose_Rp_fudge = self.expose_Rp_fudge
+                self.transit_param[ii].supersample_factor = self.supersample_factor
                 if abs(self.transit_param[ii].i-90)<0.1:
                     # If inc is close to 90 degrees, we can't get out of it due to the quadratic shape
                     self.transit_param[ii].i = 89.9

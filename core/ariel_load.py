@@ -10,6 +10,7 @@ from astropy.stats import sigma_clip
 import matplotlib.pyplot as plt
 import ariel_numerics
 import ariel_load_FGS
+import ariel_load_AIRS
 
 diagnostic_plots = False
 
@@ -849,7 +850,11 @@ def default_loaders():
     loaders[1].apply_pixel_corrections.clip_columns1=39
     loaders[1].apply_pixel_corrections.clip_columns2=321    
     loaders[1].apply_time_binning.time_binning = 5
-    loaders[1].apply_wavelength_binning = ApplyWavelengthBinningAIRS2()
+    loaders[1].apply_full_sensor_corrections.pca_options.n_components = 2
+    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows = True
+    loaders[1].apply_full_sensor_corrections.inpainting_2d = True
+    loaders[1].apply_full_sensor_corrections.restore_invalids = True
+    loaders[1].apply_wavelength_binning = ariel_load_AIRS.ApplyWavelengthBinningAIRS3()
      
     return loaders
 

@@ -56,7 +56,7 @@ class ModelOptions(kgs.BaseClass):
 
     # Configuration of the solver
     n_samples_sigma_est = 100 # how many samples to take to estimate the covariance matrix (and hence the sigma prediction)
-    n_iter = 4 # number of iterations for the non-linear solver
+    n_iter = 8 # number of iterations for the non-linear solver
     update_rate = 1 # update rate 
     max_log_update_hyperparameters = 1 # maximum update of log(hyperparameters) in each iteration
     

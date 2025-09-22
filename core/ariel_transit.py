@@ -131,7 +131,7 @@ class TransitParams(kgs.BaseClass):
         kgs.sanity_check(lambda x:x, x[0], prefix+'t0', 5, [2.5,5])
         kgs.sanity_check(lambda x:x, x[1], prefix+'alpha', 6, [-4,-1])
         kgs.sanity_check(lambda x:x, x[2], prefix+'beta', 0, [-1,1])
-        kgs.sanity_check(lambda x:x, x[3], prefix+'inc', 7, [84,90])
+        kgs.sanity_check(lambda x:x, x[3], prefix+'inc', 7, [84,96])
         kgs.sanity_check(lambda x:x, x[5], prefix+'u0', 8, [0,0.8])
         kgs.sanity_check(lambda x:x, x[6], prefix+'u1', 8, [0,0.4])
             
@@ -166,8 +166,9 @@ class TransitParams(kgs.BaseClass):
         base_curve = self.light_curve(times)
         res = []
         mod = copy.deepcopy(self)
-        for w in which:
-            x = mod.to_x()
+        x0 = mod.to_x()
+        for w in which:            
+            x = copy.deepcopy(x0)
             x[w] += self.derivative_step_size
             mod.from_x(x)
             mod_curve = mod.light_curve(times)

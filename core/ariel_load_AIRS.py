@@ -34,7 +34,7 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
     # Diagnostics
     #residual = None
     
-    n_iter = 5
+    n_iter = 3
     
     @kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
