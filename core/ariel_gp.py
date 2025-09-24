@@ -406,6 +406,10 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
         if not model_options.use_training_labels:
             model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor = \
                 np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].scaling_factor))
+            model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].m['non_pca'].scaling_factor = \
+                np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].m['non_pca'].scaling_factor))
+            model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].m['pca'].scaling_factor = \
+                np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['main'].m['transit'].depth_model.m['variation'].m['pca'].scaling_factor))
         if model_options.unregularize_transit:
             model.m['signal'].m['main'].m['transit'].std_values = [1000*x for x in model.m['signal'].m['main'].m['transit'].std_values]
             #model.m['signal'].m['main'].m['transit'].std_values[2] = 0.1

@@ -21,6 +21,7 @@ class PCA(kgs.Model):
     rescale_gamma = 0.5
     filter_ratio = 1.
     
+    adapt_gp_scaling = True
     FGS_target = 0.0001
     AIRS_target = 0.0001
   
@@ -72,17 +73,18 @@ class PCA(kgs.Model):
         
         #plt.figure()
         #plt.plot(components.T)
-        
-        # Find proper AIRS scaling
-        #print(X.shape)
-        ratio = np.var(pred[:,1:])/np.var(X[:,1:])
-        #print(1-ratio)
-        self.model_options_link.AIRS_transit_scaling *= np.sqrt(1-ratio)
-        
-        # Find proper FGS scaling
-        ratio = np.var(pred[:,0])/np.var(X[:,0])
-        #print(1-ratio)
-        self.model_options_link.FGS_transit_scaling *= np.sqrt(1-ratio)
+
+        if self.adapt_gp_scaling:
+            # Find proper AIRS scaling
+            #print(X.shape)
+            ratio = np.var(pred[:,1:])/np.var(X[:,1:])
+            #print(1-ratio)
+            self.model_options_link.AIRS_transit_scaling *= np.sqrt(1-ratio)
+
+            # Find proper FGS scaling
+            ratio = np.var(pred[:,0])/np.var(X[:,0])
+            #print(1-ratio)
+            self.model_options_link.FGS_transit_scaling *= np.sqrt(1-ratio)
         
         n_samples = X.shape[0]
         den = max(n_samples - 1, 1)                  # avoid /0 if there's only 1 sample
