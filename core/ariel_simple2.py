@@ -201,113 +201,58 @@ class SimpleModel(kgs.Model):
             for ii in range(2):
                 step1.append(self._light_curve(ii))
             # Step 2
-            if self.new_solver:
-                raise 'inactive'
-                assert self.unlock_t0
-                def residual(x):
-                    self._from_x(x)
-                    cost = 0
-                    self.pred = [None]*2
-                    residual = []
-                    for ii in range(2):
-                        self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                        residual.append(self.pred[ii]-self._targets[ii])
-                    residual = np.concatenate(residual).flatten()
-                    return residual
-                def cost(x):
-                    return kgs.rms(residual(x))
-                self.cost_list=[]
-                for o in self.order_list:
-                    self.poly_order = o
-                    for ii in range(2):
-                        new_vals = np.zeros(self.poly_order+1)
-                        inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
-                        new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
-                        self.poly_vals[ii] = new_vals
-                    x0 = self._to_x()  
-                    #res = scipy.optimize.minimize(cost,x0)
-                    lb = -np.inf*np.ones(len(x0))
-                    ub = np.inf*np.ones(len(x0))
-                    lb[-1] = -0.1-0.001*o
-                    ub[-1] = 0.1+0.001*o
-                    lb[1]=-10-0.001*o
-                    lb[2]=-0.5-0.001*o
-                    ub[1]=10+0.001*o
-                    ub[2]=0.5+0.001*o
-                    res = scipy.optimize.least_squares(
-                        fun=residual,
-                        x0=x0,
-                        bounds=(lb, ub),
-                        method="trf",
-                        loss="soft_l1",      # or "huber"
-                        #f_scale=2.0,         # tunes outlier influence
-                        #max_nfev=2000
-                    )
-                    def cost(x, do_plot = False):
-                        self._from_x(x)
-                        cost = 0
-                        self.pred = [None]*2
-                        for ii in range(2):
-                            self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                            cost += np.sum( (self.pred[ii]-self._targets[ii])**2/noise_est[ii] )
-                        return cost
-                    #res = scipy.optimize.minimize(cost,res.x)        
-                    self.cost_list.append(cost(res.x))
-                #print(res.x)
-                
-            else:
-                #print(noise_est)
-                def cost(x, do_plot = False):
-                    self._from_x(x)
-                    cost = 0
-                    self.pred = [None]*2
-                    for ii in range(2):
-                        self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
-                        cost += np.sum( (self.pred[ii]-self._targets[ii])**2 ) / noise_est[ii]**2
-                        #cost += np.sqrt( np.mean((self.pred[ii]-self._targets[ii])**2))
-                    if self.do_regularization:
-                        xx = (x-reg_mu)[:,None]
-                        cost += xx.T @ reg_prec @ xx
-                    if self.rescale_cost:
-                        cost = np.sqrt(cost) * np.mean(noise_est) / np.sqrt(1200)
-                    else:
-                        cost = cost * (np.mean(noise_est) / np.sqrt(1200))**2
-                    return float(cost)
-                self.cost_list=[]
-                for o in self.order_list:
-                    self.poly_order = o#self.poly_order_step2                    
-                    for ii in range(2):
-                        new_vals = np.zeros(self.poly_order+1)
-                        inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
-                        new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
-                        self.poly_vals[ii] = new_vals
-                    x0 = self._to_x()  
-                    (reg_cov,reg_mu) = self._cov_mu()
-                    reg_prec = np.linalg.inv(reg_cov)
-                    lb = -np.inf*np.ones(len(x0))
-                    ub = np.inf*np.ones(len(x0))                    
-                    lb[1]=-5-0.001*o
-                    ub[1]=0+0.001*o
-                    lb[2]=-1-0.001*o                    
-                    ub[2]=1+0.001*o
-                    #lb[3]=-0.5-0.001*o                    
-                    ub[3]=90
-                    while True:
+            #print(noise_est)
+            def cost(x, do_plot = False):
+                self._from_x(x)
+                cost = 0
+                self.pred = [None]*2
+                for ii in range(2):
+                    self.pred[ii] = self._light_curve(ii) #* np.polynomial.chebyshev.chebval(self._times_norm[ii], self.poly_vals[ii])
+                    cost += np.sum( (self.pred[ii]-self._targets[ii])**2 ) / noise_est[ii]**2
+                    #cost += np.sqrt( np.mean((self.pred[ii]-self._targets[ii])**2))
+                if self.do_regularization:
+                    xx = (x-reg_mu)[:,None]
+                    cost += xx.T @ reg_prec @ xx
+                if self.rescale_cost:
+                    cost = np.sqrt(cost) * np.mean(noise_est) / np.sqrt(1200)
+                else:
+                    cost = cost * (np.mean(noise_est) / np.sqrt(1200))**2
+                return float(cost)
+            self.cost_list=[]
+            for o in self.order_list:
+                self.poly_order = o#self.poly_order_step2                    
+                for ii in range(2):
+                    new_vals = np.zeros(self.poly_order+1)
+                    inds_copy = min(len(new_vals), len(self.poly_vals[ii]))
+                    new_vals[:inds_copy] = self.poly_vals[ii][:inds_copy]
+                    self.poly_vals[ii] = new_vals
+                x0 = self._to_x()  
+                (reg_cov,reg_mu) = self._cov_mu()
+                reg_prec = np.linalg.inv(reg_cov)
+                lb = -np.inf*np.ones(len(x0))
+                ub = np.inf*np.ones(len(x0))                    
+                lb[1]=-5-0.001*o
+                ub[1]=0+0.001*o
+                lb[2]=-1-0.001*o                    
+                ub[2]=1+0.001*o
+                #lb[3]=-0.5-0.001*o                    
+                ub[3]=90
+                while True:
+                    self._from_x(x0)
+                    try:
+                        res = scipy.optimize.minimize(cost,x0)                           
+                    except:
                         self._from_x(x0)
-                        try:
-                            res = scipy.optimize.minimize(cost,x0)                           
-                        except:
-                            self._from_x(x0)
-                            res = scipy.optimize.minimize(cost,x0, bounds=zip(lb,ub))      
-                        if res.x[3]>90:
-                            res.x[3] = 90-res.x[3]
-                            x0 = res.x
-                        else:
-                            break
-                    # while res.x[3]>90:
-                    #     res.x[3] = 90-res.x[3]
-                    #     res = scipy.optimize.minimize(cost,res.x)               
-                    self.cost_list.append(cost(res.x))
+                        res = scipy.optimize.minimize(cost,x0, bounds=zip(lb,ub))      
+                    if res.x[3]>90:
+                        res.x[3] = 90-res.x[3]
+                        x0 = res.x
+                    else:
+                        break
+                # while res.x[3]>90:
+                #     res.x[3] = 90-res.x[3]
+                #     res = scipy.optimize.minimize(cost,res.x)               
+                self.cost_list.append(cost(res.x))
 
 
             

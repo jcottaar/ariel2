@@ -458,8 +458,6 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     def __call__(self, data, planet, observation_number):        
         assert self.inpainting_time # actually done above
         was_invalid = cp.isnan(data.data[0,...])
-        #if self.inpainting_time:
-        #    inpaint_along_axis_inplace(data.data,0)
         if self.inpainting_wavelength:
             inpaint_vectorized(data.data)
         if self.inpainting_2d:     
@@ -467,72 +465,20 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             inpaint_vectorized(data.data)
             inpaint_vectorized(temp)
             data.data = (data.data+cp.transpose(temp, (0,2,1)))/2
-        #data.data -= self.remove_constant
-        
-        #if self.remove_background_based_on_rows:
         
         if self.use_pca_for_background_removal:
             if data.is_FGS:
                 data_pca = cp.reshape(data.data, (-1,1024,1))
                 wavelength_ids = [0]
             else:
-                #data_pca = copy.deepcopy(data.data)
-                #inpaint_vectorized(data_pca)
                 data_pca = data.data
                 wavelength_ids = np.arange(1,283)
             data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
             data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)    
-            # if data.is_FGS:
-            #     lims = [-1,5]
-            # else:
-            #     lims = [-1,50]
-            # plt.figure()
-            # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
-            # plt.clim(lims)
-            # plt.colorbar()            
-            # plt.figure()
-            # plt.imshow(cp.mean(data_for_background_removal,0).get(), aspect='auto', interpolation='none')
-            # plt.clim(lims)
-            # plt.colorbar()            
-            # plt.figure()
-            # plt.imshow(cp.mean(data_for_background_removal-data.data,0).get(), aspect='auto', interpolation='none')
-            # plt.clim([-1,1])
-            # plt.colorbar()
             
         else:
             data_for_background_removal = data.data
-        
-        
-        if data.is_FGS:
-            # plt.figure()
-            # plt.scatter(cp.sqrt(core_shapes[0]).get(), ariel_numerics.estimate_noise_cp(data.data.reshape(-1,1024)).get())
-            # plt.figure()
-            # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
-            #plt.figure()
-            #plt.imshow(core_shapes[0].get().reshape(32,32))
-            #plt.figure()
-            #plt.imshow(cp.log(ariel_numerics.estimate_noise_cp(data.data.reshape(-1,1024))).get().reshape(32,32))
-            pass
-        else:
-            pass
-#             rr = apply_pca_model(cp.mean(data.data,0)[None,...], np.arange(1,283), self.pca_options, residual_mode=0)[0]
-#             print(rr.shape)
-            
-#             noise_est = copy.deepcopy(data.data[0,:,:])
-#             shp = copy.deepcopy(data.data[0,:,:])
-#             for ii in range(282):
-#                 noise_est[:,ii] = ariel_numerics.estimate_noise_cp(data.data[:,:,ii])#/cp.sqrt(rr[0,ii])
-#                 shp[:,ii] = core_shapes[ii+1]*cp.sqrt(rr[0,ii])
-# #              plt.figure()
-#             # plt.imshow(cp.mean(data.data,0).get(), aspect='auto', interpolation='none')
-#             # plt.figure()
-#             # plt.imshow(shp.get(), aspect='auto', interpolation='none')
-#             plt.figure()
-#             plt.imshow(cp.log(noise_est).get(), aspect='auto', interpolation='none')
-            # plt.figure()
-            # for ii in range(32):
-            #     plt.scatter(cp.sqrt(shp[ii,:]).get(), noise_est[ii,:].get())
-        
+                
         if not data.is_FGS:
             background_data = cp.concatenate((data_for_background_removal[:,:self.remove_background_n_rows,:], data_for_background_removal[:,-self.remove_background_n_rows:,:]), axis=1)
             background_estimate = cp.mean(background_data, axis=(0,1))
@@ -596,236 +542,6 @@ class ApplyWavelengthBinning(kgs.BaseClass):
         for ii in range(data.data.shape[1]):
             data.noise_est[ii] = ariel_numerics.estimate_noise_cp(data.data[:,ii])*np.sqrt(data.time_intervals[0])
         #data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
-
-@dataclass    
-class ApplyWavelengthBinning2(kgs.BaseClass):
-    
-    options: object = field(init=True, default_factory = apply_pca_modelOptions)
-    
-    #@kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):
-        if data.is_FGS:
-            data.data = cp.reshape(data.data, (-1,1024,1))
-            wavelength_ids = [0]
-        else:
-            wavelength_ids = np.arange(1,283)
-
-        data.data = apply_pca_model(data.data, wavelength_ids, self.options, residual_mode=0)[0]
-        
-        # Estimate noise per pixel        
-        data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
-        
-AIRS_C0 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C0_2.pickle')
-AIRS_C = kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0]
-AIRS_design_matrix = cp.concatenate([AIRS_C0.reshape(1,32,282), cp.array(AIRS_C[:2,:]).reshape(2,32,282)])
-AIRS_design_matrix_np = AIRS_design_matrix.get()
-AIRS_rr = [cp.array(c) for c in kgs.dill_load(kgs.calibration_dir + 'AIRS_rr2.pickle')]
-del AIRS_C0; del AIRS_C;
-class ApplyWavelengthBinningAIRS2(kgs.BaseClass):
-    residual_threshold = np.inf
-    combine_rr2 = False
-    cutoff_sum=0
-    use_noise_est_naive = False
-    sequential_fit = False
-    handle_mean = True
-    #alpha=-0.5
-    
-    # Diagnostics
-    #residual = None
-    
-    @kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):
-        assert not data.is_FGS
-        
-        dataa = data.data
-        
-        result = cp.empty((dataa.shape[0], dataa.shape[2]))
-        residual = cp.empty_like(dataa)
-        residual_expected = cp.zeros((32,282))
-        mean_vals = cp.zeros(282)
-        noise_est_full = cp.zeros((32,282))
-        noise_est_naive = cp.zeros((32,282))
-        
-        planet.diagnostics['AIRS_fallback'] = False
-        
-        all_coeffs=[]
-        
-        for i_wavelength in range(282):
-        
-            isnan = cp.isnan(dataa[0,:,i_wavelength]).get()
-            
-            # Determine noise
-            rhs = ariel_numerics.estimate_noise_cov_cp(dataa[:,:,i_wavelength]).get()
-            rhs[isnan,:] = 0
-            rhs[:,isnan] = 0        
-            rhs=rhs.flatten()
-            
-#             if diagnostic_plots and i_wavelength==0:
-#                 plt.figure()
-#                 plt.imshow(rhs.reshape(32,32))
-#                 plt.title('Raw covariance')
-#                 plt.colorbar()
-
-           # plt.figure()
-           # plt.imshow(rhs.reshape(32,32).get())
-            
-            design_matrix = np.zeros((32*32, 3+32))
-            for ii in range(3):
-                x = AIRS_design_matrix_np[ii,:,[i_wavelength]]
-                x[:,isnan]=0
-                x1 = (x.T@x).flatten()
-                design_matrix[:,ii] = x1
-
-            for ii in range(32):
-                design_matrix[33*ii,ii+3]=1
-                
-            coeffs = np.linalg.lstsq(design_matrix, rhs, rcond=None)[0]    
-            residual_cov = rhs - design_matrix@coeffs        
-            # if diagnostic_plots and i_wavelength==0:                
-            #     plt.figure()
-            #     plt.imshow(residual_cov.reshape(32,32))
-            #     plt.title('Covariance residual')
-            #     plt.colorbar()
-            noise_est_naive[:,i_wavelength] = 0.4*cp.sqrt(64+cp.abs(cp.mean(dataa[:,:,i_wavelength],0)))
-            noise_est2 = cp.array(coeffs[3:])
-            to_change = noise_est2<noise_est_naive[:,i_wavelength]**2
-            noise_est2[to_change] = (noise_est_naive[:,i_wavelength]**2)[to_change]
-            noise_est = cp.sqrt(noise_est2)
-            noise_est[isnan] = 0
-            assert not cp.any(cp.isnan(noise_est))
-#             coeffs[3:][isnan] = 0
-#             if np.all(coeffs[3:][~isnan]>6):
-#                 noise_est = np.sqrt(coeffs[3:])          
-#                 noise_est = cp.array(noise_est)                
-#             else:
-#                 # fallback
-#                 print('AIRS fallback')
-#                 noise_est = noise_est_naive[:,i_wavelength]
-#                 planet.diagnostics['AIRS_fallback'] = True
-            
-            noise_est_full[:,i_wavelength] = noise_est
-            
-            #noise_est_naive[:,i_wavelength][noise_est_naive[:,i_wavelength]<8] = 8
-            
-            residual_cov_ratio = residual_cov/cp.max(rhs)
-            #kgs.sanity_check(np.min, noise_est[~isnan], 'noise_est_min', 8, [6,12])
-            kgs.sanity_check(kgs.rms, residual_cov_ratio, 'residual_cov_rms', 1, [0,0.02])
-            kgs.sanity_check(lambda x:np.max(np.abs(x)), residual_cov_ratio, 'residual_cov_max', 2, [0,0.2])
-            
-            if self.use_noise_est_naive:
-                noise_est = noise_est_naive[:,i_wavelength]
-            
-            mean_handled =  not self.handle_mean
-            isnan = cp.isnan(dataa[0,:,i_wavelength])
-            while True:
-
-                design_matrix = AIRS_design_matrix[:,:,i_wavelength]
-                if not mean_handled:
-                    design_matrix = cp.concatenate([design_matrix, cp.ones((1,32))])                      
-
-                N = design_matrix.shape[0]
-
-                if self.sequential_fit and mean_handled:
-                    res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix[1:,:].T, return_A_pinv_w=True, sigma=noise_est)
-                    coeffs = res[0]
-                    assert not cp.any(cp.isnan(coeffs))
-                    intermediate_residual = (dataa[:,:,i_wavelength].T - design_matrix[1:,:].T@coeffs).T    
-                    res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(intermediate_residual.T, design_matrix[:1,:].T, return_A_pinv_w=True, sigma=noise_est)
-                    coeffs = res[0]
-                    assert not cp.any(cp.isnan(coeffs))
-                    residual[:,:,i_wavelength] = (intermediate_residual.T - design_matrix[:1,:].T@coeffs).T                       
-                else:
-                    res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(dataa[:,:,i_wavelength].T, design_matrix.T, return_A_pinv_w=True, sigma=noise_est)
-                    coeffs = res[0]                    
-                        #plt.plot(coeffs[1,:].get())
-                    assert not cp.any(cp.isnan(coeffs))
-                    residual[:,:,i_wavelength] = (dataa[:,:,i_wavelength].T - design_matrix.T@coeffs).T    
-                
-                    A_pinv_w = res[1]
-                    A_pinv_w_full = cp.zeros((N,32))
-                    A_pinv_w_full[:,~cp.isnan(dataa[0,:,i_wavelength])] = A_pinv_w                
-                    mat = design_matrix.T@A_pinv_w_full
-                    cov_expected = cp.diag(noise_est**2) - mat@cp.diag(noise_est**2)@mat.T
-                    cov_expected[cov_expected<0] = 0
-                    residual_expected[:,i_wavelength] = cp.sqrt(cp.diag(cov_expected))
-                    assert not cp.any(cp.isnan(residual_expected[:,i_wavelength]))
-
-                    residual_expected_ratio = cp.mean(residual[:,:,i_wavelength],0)/residual_expected[:,i_wavelength]*np.sqrt(dataa.shape[0])
-                    residual_expected_ratio[cp.isnan(residual_expected_ratio)] = 0
-                
-                if not (self.sequential_fit and mean_handled) and cp.any(cp.abs(residual_expected_ratio)>self.residual_threshold):
-                    #print(i_wavelength, cp.max(cp.abs(residual_expected_ratio)), cp.argmax(cp.abs(residual_expected_ratio)), mean_handled)
-                    dataa[:,cp.argmax(cp.abs(residual_expected_ratio)),i_wavelength] = cp.nan
-                else:
-                    #mean_handled = True
-                    if not mean_handled:
-                        #print(coeffs[3,:].shape)
-                        dataa[:,:,i_wavelength]-=cp.mean(coeffs[3,:])    
-                        mean_vals[i_wavelength] = cp.mean(coeffs[3,:])    
-                        mean_handled = True
-                    else:
-                        #result[:,i_wavelength] = self.alpha*np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)+(1-self.alpha)*coeffs[0,:]
-                        if self.sequential_fit:
-                            result[:,i_wavelength] = coeffs[0,:]
-                        elif self.combine_rr2:
-                            result[:,i_wavelength] = cp.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
-                        else:
-                            reconstructed_signal = (design_matrix.T@coeffs).T
-                            result[:,i_wavelength] = cp.sum(reconstructed_signal[:,self.cutoff_sum:32-self.cutoff_sum],1)
-                        #result[:,i_wavelength] = coeffs[0,:]
-                        #result[:,i_wavelength] = np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
-                        break
-                        # if self.use_rr:
-                        #     result[:,i_wavelength] = np.sum(coeffs*AIRS_rr[i_wavelength][:,None],0)#coeffs[0,:]
-                        # else:
-                        #     result[:,i_wavelength] = coeffs[0,:]
-                        # break
-            if diagnostic_plots:
-                all_coeffs.append(coeffs)
-                        
-        #kgs.sanity_check(np.nanmin, noise_est_full/noise_est_naive, 'noise_est_ratio', 3, [0.4,0.9])
-        kgs.sanity_check(np.nanmax, 1-cp.std(residual,0)/residual_expected, 'residual_std_ratio', 4, [0.03,0.15])
-        kgs.sanity_check(lambda x:np.nanmax(np.abs(x)), cp.mean(residual,0)/residual_expected, 'residual_mean_ratio', 5, [0,5])
-              
-        if diagnostic_plots:
-            plt.figure()
-            plt.plot(cp.mean(cp.stack(all_coeffs),0)[2,:].get())
-            plt.figure()
-            plt.scatter(noise_est_naive.flatten().get(), noise_est_full.flatten().get())
-            plt.axline((0,0), slope=1, color='black')
-            plt.figure()
-            plt.imshow(residual_expected.get(), interpolation='none', aspect='auto')
-            plt.colorbar()
-            plt.title('Residual expected')
-            plt.figure()
-            plt.imshow((cp.std(residual,0)/residual_expected).get(), interpolation='none', aspect='auto')
-            plt.colorbar()
-            plt.title('Residual STD scaled')
-            plt.figure()
-            #plt.imshow((cp.mean(residual,0)/residual_expected*np.sqrt(dataa.shape[0]))[:,:].get(), interpolation='none', aspect='auto')
-            plt.imshow((cp.mean(residual,0)/residual_expected)[:,:].get(), interpolation='none', aspect='auto')
-            #plt.clim([-30,30])
-            plt.colorbar()          
-            plt.title('Residual mean scaled')
-            # plt.figure()
-            # plt.plot(mean_vals.get())
-            plt.figure()
-            plt.imshow(cp.log(noise_est_full).get(), interpolation='none', aspect='auto')
-            plt.colorbar()
-            print('min', cp.min(noise_est_full), cp.nanmin(noise_est_full))
-            plt.title('Noise est')
-            for ii in range(1):
-                plt.figure()
-                for jj in range(282):
-                    i_wavelength = 10*ii+jj
-                    plt.scatter(noise_est_full[:,i_wavelength].flatten().get(), noise_est_naive[:,i_wavelength].flatten().get())
-                plt.axline((0,0), slope=1, color='black')
-        data.data = result
-        data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
-        
-       # self.residual = residual
-
-
     
 
 def default_loaders():

@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cupy as cp
 import ariel_load
-import ariel_simple
 import ariel_model
 import ariel_gp
 import dill
@@ -45,8 +44,8 @@ def run_loader_test(use_cache=False, regenerate_reference=False):
 def run_model_test(regenerate_reference=False):
     kgs.debugging_mode = 2
     models = dict()
-    models['simple'] = ariel_simple.SimpleModel()    
-    models['simple'].run_in_parallel = not regenerate_reference
+    #models['simple'] = ariel_simple.SimpleModel()    
+    #models['simple'].run_in_parallel = not regenerate_reference
     models['baseline'] = ariel_model.baseline_model()
     models['baseline'].model.n_components = 1
     models['baseline'].model.model.run_in_parallel = not regenerate_reference

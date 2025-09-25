@@ -19,18 +19,18 @@ import copy
 import matplotlib.pyplot as plt
 import kaggle_support as kgs # used for some support functions
 
-# if kgs.running_on_kaggle:
-#     # Load sksparse, which is not installed by default. This is the best I managed after half a day of messing with pip, conda, and apt-get...
-#     import subprocess
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/sksparse.zip -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libcholmod.so.3 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libcamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libcolamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libccolamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libsuitesparseconfig.so.5 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("unzip -n /kaggle/usr/lib/install_skparse_pip/lib.zip usr/lib/x86_64-linux-gnu/libmetis.so.5 -d /", shell=True, stdout=subprocess.DEVNULL)
-#     subprocess.run("export CHOLMOD_USE_GPU=1", shell=True, stdout=subprocess.DEVNULL)
+if kgs.env == 'kaggle':
+    # Load sksparse, which is not installed by default. This is the best I managed after half a day of messing with pip, conda, and apt-get...
+    import subprocess
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/sksparse.zip -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libcholmod.so.3 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libcamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libcolamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libccolamd.so.2 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libsuitesparseconfig.so.5 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("unzip -n /kaggle/usr/lib/sksparse_package_installer_2025/lib.zip usr/lib/x86_64-linux-gnu/libmetis.so.5 -d /", shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run("export CHOLMOD_USE_GPU=1", shell=True, stdout=subprocess.DEVNULL)
 from sksparse.cholmod import cholesky
 
 # Define sparse matrix class we use throughout
@@ -445,90 +445,6 @@ class ParameterScaler(Passthrough):
         return matrices
 
 
-
-class Sparse2D(Passthrough):
-    # KISS-GP implementation. The internal model is evaluated on a sparse grid, and the behavior on the full grid is determined by linear interpolation.
-    h = None # 2-element array specifying grid resolution
-    features = None # Which 2 features in the observable do we depend on?
-    transform_matrix = None # Linear interpolation matrix (set internally)
-
-    def __init__(self):
-        grid_size = np.array([1,1])
-
-    def _check_constraints(self):
-        assert self.h.shape == (2,)
-        assert len(self.features)==2
-        super()._check_constraints()
-
-    def alter_obs(self, obs):
-        # Make the observable to pass to the internal mdoel
-        obs_altered = Observable()
-        x = obs.df[self.features[0]]
-        y = obs.df[self.features[1]]
-        min_x = np.min(x)
-        max_x = np.max(x)
-        min_y = np.min(y)
-        max_y = np.max(y)
-        xt = np.linspace(min_x-self.h[0], max_x+self.h[0], int(np.round((max_x-min_x + self.h[0])/self.h[0])))
-        yt = np.linspace(min_y-self.h[1], max_y+self.h[1], int(np.round((max_y-min_y + self.h[1])/self.h[1])))
-        yy,xx = np.meshgrid(yt,xt)
-        xx = np.reshape(xx,-1)
-        yy = np.reshape(yy,-1)
-        obs_altered.df['x'] = xx
-        obs_altered.df['y'] = yy
-        obs_altered.labels = np.tile(np.zeros(xx.shape) , (obs.number_of_instances,1)).T
-        return obs_altered,xt,yt,x,y
-
-    def initialize_internal(self, obs, number_of_instances):
-        # Make grid
-        obs_altered,xt,yt,x,y = self.alter_obs(obs)
-        hx = xt[1]-xt[0]
-        hy = yt[1]-yt[0]
-        super().initialize_internal(obs_altered, number_of_instances)
-
-        # This is as good a time as any to prepare our transformation matrix...
-        ind_x_left = np.floor( (x-xt[0])/hx ).astype(int)
-        scale_x = 1-(x-xt[ind_x_left])/hx
-        assert np.all(np.logical_and(ind_x_left>=0, ind_x_left<=len(xt)-2))
-        ind_y_top = np.floor ( (y-yt[0])/hy ).astype(int)
-        scale_y = 1-(y-yt[ind_y_top])/hy
-        assert np.all(np.logical_and(ind_y_top>=0, ind_y_top<=len(yt)-2))
-        ind_top_left = ind_y_top + len(yt)*ind_x_left
-
-        rows = np.arange(obs.number_of_observations) # repeated 4x        
-        # top left
-        cols1 = ind_top_left
-        vals1 = scale_x * scale_y
-        # top right
-        cols2 = ind_top_left + len(yt)
-        vals2 = (1-scale_x) * scale_y
-        # bottom left
-        cols3 = ind_top_left + 1
-        vals3 = scale_x * (1-scale_y)
-        # bottom right
-        cols4 = ind_top_left + len(yt) + 1
-        vals4 = (1-scale_x) * (1-scale_y)
- 
-        rows = np.concatenate((rows,rows,rows,rows))
-        cols = np.concatenate((cols1,cols2,cols3,cols4))
-        vals = np.concatenate((vals1,vals2,vals3,vals4))
-
-        self.transform_matrix = sparse_matrix((vals, (rows.astype(int),cols.astype(int))), shape = (obs.number_of_observations,obs_altered.number_of_observations))
- 
-    def get_prior_distribution_internal(self,obs):
-        return self.model.get_prior_matrices(self.alter_obs(obs)[0], get_observation_relationship=False) 
-        
-    def get_observation_relationship_internal(self,obs):
-        prior_matrices = self.model.get_prior_matrices(self.alter_obs(obs)[0], get_prior_distribution=False) 
-        prior_matrices.design_matrix = self.transform_matrix @ prior_matrices.design_matrix
-        prior_matrices.observable_offset = self.transform_matrix @ prior_matrices.observable_offset
-        prior_matrices.number_of_observations = self.number_of_observations
-        return prior_matrices
-
-    def get_prediction_internal(self,obs):
-        return self.transform_matrix @ self.model.get_prediction(self.alter_obs(obs)[0])
-
-
 class Compound(Model):
     # Combines multiple models; their predictions are added or multiplied
     mode = 'sum' # 'sum' or 'product'
@@ -898,99 +814,6 @@ class UncorrelatedVaryingSigma(Uncorrelated):
     def update_hyperparameters_from_mat_internal(self,mat):
         return False
 
-
-class SquaredExponentialKernelMulti(FeatureSelector):
-    # The Gaussian Process model. Combined multiple kernels with different length scale, each a squared-exponential kernel.
-    sigmas = [] # np.array, one each for one length scale, and one additional one for noise
-    lengths = [] # list of np.array, each specifying one length scale. Each one is an n-element array, where n is the number of dimensions (determined by the length of the features property)
-    update_sigma = False # expose sigma values as hyperparameters?
-    max_log_sigma_step = 25 # maximum update step for hyperparameter optimization
-    maxiter = 10 # for sigma updates
-    require_mean_of_non_noise_zero = False # doesn't do what you might expect for more than one feature
-    
-
-    def _check_constraints(self):
-        assert isinstance(self.sigmas, np.ndarray)
-        assert isinstance(self.lengths, list)
-        assert self.sigmas.shape == (len(self.lengths)+1,)
-        super()._check_constraints()
-
-    def get_number_of_parameters_from_mat_internal(self, mat):
-        return mat.shape[0]
-
-    def get_observable_relationship_from_mat_internal(self,mat):
-        prior_matrices = PriorMatrices()
-        prior_matrices.number_of_observations = mat.shape[0]      
-        prior_matrices.observable_offset = np.zeros((mat.shape[0]))
-        prior_matrices.design_matrix = sparse_matrix (sp.sparse.eye(mat.shape[0]))
-        return prior_matrices
-
-    def get_K(self,sigmas,mat):
-        # Helper function to get covariance matrix
-        K = np.zeros((mat.shape[0], mat.shape[0]))
-        for i in range(len(self.lengths)):
-            # Add squared exponential for each length scale
-            mat_normalized = mat/self.lengths[i]
-            if mat_normalized.shape[0] == 0:
-                distances = np.zeros((0,0))
-            else:
-                distances = sp.spatial.distance_matrix(mat_normalized, mat_normalized)
-            K = K+sigmas[i]**2 * np.exp(-distances**2)
-        if self.require_mean_of_non_noise_zero:
-            # Make sure mean is zero
-            if len(self.features)==1:
-                J = np.ones((1,K.shape[0]))
-                J[0] = 0.5
-                J[-1] = 0.5
-                K = K - K@(J.T@(sp.linalg.solve(J@K@J.T, (J@K))))
-            else:
-                assert len(self.features)==2
-                base_mat = mat[:,1]
-                _,inds = np.unique(base_mat,axis=0,return_inverse=True)
-                n_obs = mat.shape[0]
-                vals = np.ones(n_obs)
-                vals[np.logical_or(base_mat==np.min(base_mat), base_mat==np.max(base_mat))] = 0.5
-                J = sparse_matrix( (vals, (np.arange(n_obs), inds)) ).toarray().T
-                Q = J@K@J.T
-                K = K - K@(J.T@(sp.linalg.solve(Q+1e-3*Q[1,1]*np.eye(J.shape[0]), (J@K))))
-        # Add noise (there must always be a small noise for numerical reasons)
-        K = K+sigmas[-1]**2 * np.eye(mat.shape[0])
-        return K
-                          
-         
-    def get_prior_distribution_from_mat_internal(self,mat):
-        prior_matrices = PriorMatrices()
-        prior_matrices.number_of_parameters = mat.shape[0]
-        prior_matrices.prior_mean = np.zeros((mat.shape[0]))
-
-        K = self.get_K(self.sigmas, mat)
-
-        prior_matrices.prior_precision_matrix =  sparse_matrix(sp.linalg.inv(K))
-        return prior_matrices
-
-    def get_prediction_from_mat_internal(self, mat):
-        return self.parameters
-
-    def update_hyperparameters_from_mat_internal(self,mat):
-        if self.update_sigma:
-            # Optimize log likelihood for the given parameters
-            X = self.parameters
-            def minus_log_likelihood(log_sigmas):
-                K = self.get_K(np.exp(log_sigmas), mat)
-                det_term = -0.5*np.linalg.slogdet(K).logabsdet
-                exp_term = -0.5*X*(np.linalg.solve(K,X))
-                return -(X.shape[1]*det_term + np.sum(exp_term))
-            self.sigmas = np.exp(sp.optimize.fmin_l_bfgs_b(minus_log_likelihood, np.log(self.sigmas), approx_grad=True, \
-                                                      epsilon=1e-3, disp=1, maxiter=self.maxiter, \
-                                                      bounds = [(np.log(item)-self.max_log_sigma_step,np.log(item)+self.max_log_sigma_step) for item in self.sigmas])[0])
-            fudge = 1e-3
-            if self.sigmas[-1] < fudge*np.max(self.sigmas):
-                self.sigmas[-1] = fudge*np.max(self.sigmas) # keep positive definite
-            return True
-        else:
-            return False
-
-            
 
 
 def my_cholesky(P):

@@ -36,7 +36,7 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
     
     n_iter = 3
     
-    @kgs.profile_each_line
+    #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         assert not data.is_FGS
         
@@ -48,7 +48,8 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
         # residual_expected = cp.zeros((32,282))
         # mean_vals = cp.zeros(282)
         noise_est_full = cp.zeros((32,282))
-        noise_est_naive = cp.zeros((32,282))
+        #noise_est_naive = cp.zeros((32,282))
+        noise_est_naive = 0.4*cp.sqrt(64+cp.abs(cp.mean(dataa,0)))
         # all_coeffs=[]
         
         for i_wavelength in range(282):
@@ -72,8 +73,8 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
                 design_matrix[33*ii,ii+3]=1
                 
             coeffs = np.linalg.lstsq(design_matrix, rhs, rcond=None)[0]    
-            residual_cov = rhs - design_matrix@coeffs        
-            noise_est_naive[:,i_wavelength] = 0.4*cp.sqrt(64+cp.abs(cp.mean(dataa[:,:,i_wavelength],0)))
+            residual_cov = rhs - design_matrix@coeffs       
+            
             noise_est2 = cp.array(coeffs[3:])
             to_change = noise_est2<noise_est_naive[:,i_wavelength]**2
             noise_est2[to_change] = (noise_est_naive[:,i_wavelength]**2)[to_change]
@@ -86,42 +87,7 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
             residual_cov_ratio = residual_cov/cp.max(rhs)
             kgs.sanity_check(kgs.rms, residual_cov_ratio, 'residual_cov_rms', 1, [0,0.02])
             kgs.sanity_check(lambda x:np.max(np.abs(x)), residual_cov_ratio, 'residual_cov_max', 2, [0,0.2])
-            
-        #plt.figure();plt.imshow(noise_est_full.get(), aspect='auto', interpolation='none');plt.colorbar()
 
-#         n_batch = dataa.shape[0]
-#         n_comp = AIRS_C6.shape[2]
-#         n_wavelength = AIRS_C6.shape[1]
-#         n_r = AIRS_C6.shape[0]
-#         C = AIRS_C6
-#         W = cp.zeros((n_batch,n_comp))
-#         W[:,0] = 1
-#         rhs = dataa.reshape(n_batch,n_r*n_wavelength,1)
-#         isnan = cp.isnan(rhs[0,:,0])           
-#         rhs[:,isnan,:] = 0
-#         noise_est = noise_est_full.flatten()
-#         noise_est[isnan] = 0
-#         for ii in range(self.n_iter):
-            
-#             # Fit W0
-#             sum_wi_ci = cp.zeros((n_batch, n_r, n_wavelength))
-#             for i_comp in range(n_comp):
-#                 sum_wi_ci += W[:,None,None,i_comp] * C[None,:,:,i_comp]
-#             sum_wi_ci = sum_wi_ci.reshape(n_batch, n_r*n_wavelength)
-#             sum_wi_ci[:,isnan] = 0 
-#             sum_wi_ci = sum_wi_ci.reshape(n_batch, n_r, n_wavelength)
-#             rhs2 = rhs.reshape(n_batch, n_r, n_wavelength)
-#             W0 = cp.sum(rhs2*sum_wi_ci,1) / cp.sum(sum_wi_ci*sum_wi_ci,1)
-            
-#             # Fit W
-#             design_matrix = W0[:,None,:,None]*C[None,:,:,:]
-#             design_matrix = design_matrix.reshape(n_batch, n_r*n_wavelength,n_comp)            
-#             design_matrix[:,isnan,:]=0
-#             AtA = cp.einsum('tmn,tmk->tnk', design_matrix, design_matrix)    # (n_t, n_comp, n_comp)
-#             Atb = cp.einsum('tmn,tmk->tnk', design_matrix, rhs)   # (t, n, 1)
-#             coeffs = cp.linalg.solve(AtA,Atb)
-#             assert not cp.any(cp.isnan(coeffs))
-#             W = coeffs[:,:,0]
 
         n_batch = dataa.shape[0]
         n_comp = AIRS_C6.shape[2]

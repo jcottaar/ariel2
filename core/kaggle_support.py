@@ -45,7 +45,7 @@ else:
 print(env)
 
 profiling = False
-debugging_mode = 2
+debugging_mode = 1
 verbosity = 1
 disable_any_parallel = False
 
@@ -68,14 +68,11 @@ os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
 # How many workers is optimal for parallel pool?
-n_workers = 3 if env=='kaggle' else 6
+n_workers = 2 if env=='kaggle' else 6
 def recommend_n_workers():
     return n_workers
 n_threads = 1
 
-# os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")  # deterministic cuBLAS
-# os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")           # disable TF32 (TF32 can vary)
-# os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")     # more stable kernel ordering
 n_cuda_devices = torch.cuda.device_count()
 process_name = multiprocess.current_process().name
 if not multiprocess.current_process().name == "MainProcess":
@@ -745,38 +742,6 @@ def mats_to_data(data, reference_data, mats):
             assert(cp.all(mats[ii]==mats_test[ii]))
     
 
-# def score_metric_fast(y_true, y_pred, cov_pred):
-#     #y_true = np.stack([d.spectrum for d in reference_data])
-#     #y_pred = np.stack([d.spectrum for d in data])
-#     #sigma_pred = np.stack([np.sqrt(np.diag(d.spectrum_cov)) for d in data])
-#     sigma_pred = cp.array([cp.sqrt(cp.diag(cov)) for cov in cov_pred]).get()
-#     y_true = y_true.get()
-#     y_pred = y_pred.get()
-#     n_wavelengths = 283
-    
-#     sigma_true = np.append(
-#         np.array(
-#             [
-#                 1e-6,
-#             ]
-#         ),
-#         np.ones(n_wavelengths - 1) * 1e-5,
-#     )
-    
-#     naive_mean, naive_sigma = cp.mean(y_true), cp.std(y_true)
-    
-#     GLL_pred = sp.stats.norm.logpdf(y_true, loc=y_pred, scale=sigma_pred)
-#     GLL_true = sp.stats.norm.logpdf(y_true, loc=y_true, scale=sigma_true * np.ones_like(y_true))
-#     GLL_mean = sp.stats.norm.logpdf(y_true, loc=naive_mean * np.ones_like(y_true), scale=naive_sigma * np.ones_like(y_true))
-
-#     # normalise the score, right now it becomes a matrix instead of a scalar.
-#     ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)
-
-#     fgs_weight=57.846
-#     weights = np.append(np.array([fgs_weight]), np.ones(n_wavelengths - 1))
-#     weights = weights * np.ones_like(ind_scores)
-#     submit_score = np.average(ind_scores, weights=weights)
-#     return float(submit_score) # clipping between 0 and 1 removed
 
 #@profile_each_line
 def score_metric_fast(y_true, y_pred, cov_pred, fgs_weight=57.846):

@@ -33,8 +33,8 @@ class ModelOptions(kgs.BaseClass):
 
     # Configuration of the transit depth prior
     update_transit_variation_sigma = True # whether to update the magnitude of the transit depth variation; this effectively makes the fit less aggressive if the transit depth seems flat
-    update_transit_pca_sigma = False
-    update_transit_nonpca_sigma = False
+    update_transit_pca_sigma = False 
+    update_transit_nonpca_sigma = False 
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
     transit_prior_info = 0
     FGS_AIRS_decoupling = 1
@@ -113,46 +113,27 @@ def define_prior(obs, model_options, data):
     
     ## AIRS drift: average (depends only on time) and spectral (depends on time and wavelength); we'll define them in 'm' and then create the final class at the end
     m = dict()
-    if model_options.AIRS_order_time==-1:
-        # Define average AIRS drift - 1D Gaussian Processs over time
-        drift_hyper = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters.pickle')
-        m['average'] = gp.SquaredExponentialKernelMulti() # our standard GP class, combining squared-exponential kernels for multiple length scales
-        m['average'].features = ['time']
-        m['average'].lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_old.pickle')['average_lengths'] # lengths for the kernels are in this file for legacy reasons
-        m['average'].sigmas = drift_hyper['average_sigmas'] # load tuned values
-        m['average'].require_mean_of_non_noise_zero = True # we don't want the drift to catch offsets
-        # Define spectral AIRS drift - 2D Gaussian Processs over time and wavelength
-        m['spectral'] = gp.Sparse2D() # this class does the KISS-GP to speed things up
-        m['spectral'].features = ['time', 'wavelength']        
-        m['spectral'].model = gp.SquaredExponentialKernelMulti()
-        m['spectral'].model.features = ['x','y'] # dummy features introduced by gp.Sparse2D()
-        m['spectral'].model.lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_old.pickle')['spectral_lengths']
-        m['spectral'].model.sigmas = drift_hyper['spectral_sigmas']
-        m['spectral'].model.sigmas[-1] = m['spectral'].model.sigmas[-1]*1e-2
-        m['spectral'].model.require_mean_of_non_noise_zero = True
-        m['spectral'].h = np.array([0.4, 0.05])*model_options.hfactor # grid resolution for KISS-GP        
-    else:
-        m['average'] = gp.FixedValue()
-        m['spectral'] = gp.FixedBasis()
-        m['spectral'].features = ['time', 'wavelength']
-        m['spectral'].regularization_variance = np.array([1e4]*(model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
-        t = obs.df['time'].to_numpy()
-        t = t[obs.df['is_AIRS']]
-        times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
-        t = obs.df['wavelength'].to_numpy()
-        t = t[obs.df['is_AIRS']]
-        wavelength_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
-        m['spectral'].basis_functions = np.zeros((len(times_norm), model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
-        for i_order in range(1,model_options.AIRS_order_time+1):
-            for j_order in range(model_options.AIRS_order_wavelength+1):
-                poly_vals1 = np.zeros(model_options.AIRS_order_time+1)
-                poly_vals1[i_order] = 1
-                poly_vals2 = np.zeros(model_options.AIRS_order_wavelength+1)
-                poly_vals2[j_order] = 1
-                m['spectral'].basis_functions[:,j_order*model_options.AIRS_order_time + i_order - 1] = np.polynomial.chebyshev.chebval(times_norm, poly_vals1)*np.polynomial.chebyshev.chebval(wavelength_norm, poly_vals2)
-        # plt.figure()
-        # plt.imshow(m['spectral'].basis_functions, aspect='auto', interpolation='none')
-        # plt.pause(0.001)
+    m['average'] = gp.FixedValue()
+    m['spectral'] = gp.FixedBasis()
+    m['spectral'].features = ['time', 'wavelength']
+    m['spectral'].regularization_variance = np.array([1e4]*(model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
+    t = obs.df['time'].to_numpy()
+    t = t[obs.df['is_AIRS']]
+    times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
+    t = obs.df['wavelength'].to_numpy()
+    t = t[obs.df['is_AIRS']]
+    wavelength_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
+    m['spectral'].basis_functions = np.zeros((len(times_norm), model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
+    for i_order in range(1,model_options.AIRS_order_time+1):
+        for j_order in range(model_options.AIRS_order_wavelength+1):
+            poly_vals1 = np.zeros(model_options.AIRS_order_time+1)
+            poly_vals1[i_order] = 1
+            poly_vals2 = np.zeros(model_options.AIRS_order_wavelength+1)
+            poly_vals2[j_order] = 1
+            m['spectral'].basis_functions[:,j_order*model_options.AIRS_order_time + i_order - 1] = np.polynomial.chebyshev.chebval(times_norm, poly_vals1)*np.polynomial.chebyshev.chebval(wavelength_norm, poly_vals2)
+    # plt.figure()
+    # plt.imshow(m['spectral'].basis_functions, aspect='auto', interpolation='none')
+    # plt.pause(0.001)
     # Combine average and spectral drift
     drift_model_AIRS = gp.ParameterScaler()
     drift_model_AIRS.scaler = 1e-3 # Typical parameter scale, helps with numerics
@@ -164,25 +145,17 @@ def define_prior(obs, model_options, data):
     ## FGS drift: average only, otherwise similar to above
     # Define average FGS drift - 1D Gaussian Processs over time
     m = dict()
-    if model_options.FGS_order==-1:
-        drift_hyper = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_fgs.pickle')
-        m['average'] = gp.SquaredExponentialKernelMulti()
-        m['average'].features = ['time']
-        m['average'].lengths = kgs.dill_load(kgs.code_dir + 'drift_hyperparameters_fgs_old.pickle')['average_lengths']
-        m['average'].sigmas = drift_hyper['average_sigmas']
-        m['average'].require_mean_of_non_noise_zero = True
-    else:
-        m['average'] = gp.FixedBasis()
-        m['average'].features = ['time']
-        m['average'].regularization_variance = np.array([1e4]*model_options.FGS_order)
-        t = obs.df['time'].to_numpy()
-        t = t[~obs.df['is_AIRS']]
-        times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
-        m['average'].basis_functions = np.zeros((len(times_norm), model_options.FGS_order))
-        for i_order in range(model_options.FGS_order):
-            poly_vals = np.zeros(model_options.FGS_order+1)
-            poly_vals[i_order+1] = 1
-            m['average'].basis_functions[:,i_order] = np.polynomial.chebyshev.chebval(times_norm, poly_vals)
+    m['average'] = gp.FixedBasis()
+    m['average'].features = ['time']
+    m['average'].regularization_variance = np.array([1e4]*model_options.FGS_order)
+    t = obs.df['time'].to_numpy()
+    t = t[~obs.df['is_AIRS']]
+    times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
+    m['average'].basis_functions = np.zeros((len(times_norm), model_options.FGS_order))
+    for i_order in range(model_options.FGS_order):
+        poly_vals = np.zeros(model_options.FGS_order+1)
+        poly_vals[i_order+1] = 1
+        m['average'].basis_functions[:,i_order] = np.polynomial.chebyshev.chebval(times_norm, poly_vals)
     # Combine; not really needed since it's just 1 model, but we do it for consistency with AIRS model
     drift_model_FGS = gp.ParameterScaler()
     drift_model_FGS.scaler = 1e-3
@@ -218,34 +191,21 @@ def define_prior(obs, model_options, data):
     m['average'].model.sigma = 0.01 # kind of infinite
     
     # Define the non-PCA part of the variation
-    if model_options.use_old_transit_depth_prior:
-        model_AIRS = gp.ParameterScaler()
-        model_AIRS.scaler = np.sqrt(np.sum(model_options.transit_prior_info['sigmas_per_npca'][0]**2))
-        model_AIRS.model = gp.SquaredExponentialKernelMulti()
-        model_AIRS.model.features = ['wavelength']
-        model_AIRS.model.sigmas = model_options.transit_prior_info['sigmas_per_npca'][0]
-        model_AIRS.model.lengths = model_options.transit_prior_info['lengths']   
-        model_FGS = gp.ParameterScaler()
-        model_FGS.scaler = 1e-4
-        model_FGS.model = gp.Uncorrelated()
-        model_FGS.model.features = ['wavelength']
-        model_FGS.model.sigma = model_options.transit_prior_info['fgs_sigmas'][0]*model_options.FGS_AIRS_decoupling # effectively decouple FGS and AIRS        
-    else:
-        transit_depth_prior = kgs.dill_load(kgs.code_dir + '/transit_depth_new.pickle')
-        model_AIRS = gp.ParameterScaler()
-        model_AIRS.scaler = 1e-4
-        model_AIRS.model = transit_depth_prior[0][1]
-        model_AIRS.model.hyperparameters = model_options.transit_depth_alpha * transit_depth_prior[0][1].hyperparameters + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][1].hyperparameters
-        model_AIRS.model.features = ['wavelength']
-        model_FGS = gp.ParameterScaler()
-        model_FGS.scaler = 1e-4
-        model_FGS.model = gp.Uncorrelated()
-        model_FGS.model.features = ['wavelength']
-        model_FGS.model.sigma = (model_options.transit_depth_alpha * transit_depth_prior[0][0] + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][0]).item()
-        if not model_options.new_transit_depth_FGS_sigma_override is None:
-            model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
-        model_FGS.model.sigma *= model_options.FGS_AIRS_decoupling
-        
+    transit_depth_prior = kgs.dill_load(kgs.code_dir + '/transit_depth_new.pickle')
+    model_AIRS = gp.ParameterScaler()
+    model_AIRS.scaler = 1e-4
+    model_AIRS.model = transit_depth_prior[0][1]
+    model_AIRS.model.hyperparameters = model_options.transit_depth_alpha * transit_depth_prior[0][1].hyperparameters + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][1].hyperparameters
+    model_AIRS.model.features = ['wavelength']
+    model_FGS = gp.ParameterScaler()
+    model_FGS.scaler = 1e-4
+    model_FGS.model = gp.Uncorrelated()
+    model_FGS.model.features = ['wavelength']
+    model_FGS.model.sigma = (model_options.transit_depth_alpha * transit_depth_prior[0][0] + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][0]).item()
+    if not model_options.new_transit_depth_FGS_sigma_override is None:
+        model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
+    model_FGS.model.sigma *= model_options.FGS_AIRS_decoupling
+
     model_FGS.scaling_factor *= model_options.FGS_transit_scaling
     model_AIRS.scaling_factor *= model_options.AIRS_transit_scaling
     
@@ -423,43 +383,6 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
     # Plot if desired
     if plot_final:
         visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, simple=plot_simple)
-
-    # Lots of sanity checks to catch misbehaving planets in the private test set
-#     if kgs.sanity_checks_active:     
-#         obs_expected_noise_squared = copy.deepcopy(obs)
-#         obs_expected_noise_squared.labels = np.reshape(1/posterior_mean.m['noise'].get_prior_matrices(obs).prior_precision_matrix.diagonal(), (-1,1))
-#         obs_noise = copy.deepcopy(obs)
-#         obs_noise.labels =  posterior_mean.m['noise'].get_prediction(obs)
-
-#         # Total noise
-#         scaled_noise = obs_noise.labels / np.sqrt(obs_expected_noise_squared.labels)
-#         kgs.sanity_check(np.max, np.abs(scaled_noise), 'scaled_noise_max', 21, [2, 8]) 
-#         kgs.sanity_check(kgs.rms, scaled_noise, 'scaled_noise_rms', 22, [0.95, 1.05]) 
-
-#         # FGS noise
-#         scaled_noise = obs_noise.export_matrix(False) / np.sqrt(obs_expected_noise_squared.export_matrix(False))
-#         kgs.sanity_check(np.max, np.abs(scaled_noise), 'fgs_scaled_noise_max', 23, [1, 8]) 
-#         kgs.sanity_check(kgs.rms, scaled_noise, 'fgs_scaled_noise_rms', 24, [0.3, 1.7]) 
-
-#         # AIRS noise per column (summed over wavelength)
-#         scaled_noise = np.sum(obs_noise.export_matrix(True), axis=1) / np.sqrt(np.sum(obs_expected_noise_squared.export_matrix(True), axis=1))
-#         kgs.sanity_check(np.max, np.abs(scaled_noise), 'airs_column_scaled_noise_max', 25, [1, 8]) 
-#         kgs.sanity_check(kgs.rms, scaled_noise, 'airs_column_scaled_noise_rms', 26, [0.7, 1.3]) 
-
-#         # AIRS noise per row (summed over time)
-#         scaled_noise = np.sum(obs_noise.export_matrix(True), axis=0) / np.sqrt(np.sum(obs_expected_noise_squared.export_matrix(True), axis=0))
-#         kgs.sanity_check(np.max, np.abs(scaled_noise), 'airs_row_scaled_noise_max', 27, [0, 7]) 
-#         kgs.sanity_check(kgs.rms, scaled_noise, 'airs_row_scaled_noise_rms', 28, [0, 2]) 
-        
-# #         kgs.sanity_check(np.min, posterior_mean.m['signal'].m['main'].m['drift'].m['AIRS'].model.m['average'].parameters, 'drift_min', 15, [-5e-3, 0]) 
-#         kgs.sanity_check(np.max, posterior_mean.m['signal'].m['main'].m['drift'].m['AIRS'].model.m['average'].parameters, 'drift_max', 15, [0, 5e-3]) 
-#         kgs.sanity_check(np.min, posterior_mean.m['signal'].m['main'].m['drift'].m['FGS'].model.m['average'].parameters, 'drift_FGS_min', 14, [-2e-2, 0]) 
-#         kgs.sanity_check(np.max, posterior_mean.m['signal'].m['main'].m['drift'].m['FGS'].model.m['average'].parameters, 'drift_FGS_max', 14, [0, 2e-2]) 
-#         kgs.sanity_check(np.min, posterior_mean.m['signal'].m['main'].m['drift'].m['AIRS'].model.m['spectral'].model.parameters, 'spectral_drift_min', 16, [-2e-2, 0]) 
-#         kgs.sanity_check(np.max, posterior_mean.m['signal'].m['main'].m['drift'].m['AIRS'].model.m['spectral'].model.parameters, 'spectral_drift_max', 16, [0, 2e-2]) 
-#         kgs.sanity_check(lambda x:x, posterior_mean.m['signal'].m['main'].m['transit'].m['transit_window'].parameters[0]-data['t_ingress'], 'ingress_time_delta', 19, [-0.15,0.15])
-#         kgs.sanity_check(lambda x:x, posterior_mean.m['signal'].m['main'].m['transit'].m['transit_window'].parameters[1]-data['t_egress'], 'egress_time_delta', 19, [-0.15,0.15])
-#         kgs.sanity_check(np.exp, posterior_mean.m['signal'].m['main'].m['transit'].m['transit_window'].parameters[2], 'ingress_width', 18, [0,3])    
 
     # Compile results
     results = dict()

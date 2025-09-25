@@ -49,6 +49,7 @@ class ApplyWavelengthBinningFGS2(kgs.BaseClass):
         data.data = res
         data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
 
+#@kgs.profile_each_line
 def get_coeffs(data, n_mean_pixels=-1):
     
     data = data.reshape(-1,1024)

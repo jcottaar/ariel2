@@ -1,5 +1,4 @@
 import kaggle_support as kgs
-import ariel_simple
 import ariel_gp
 from dataclasses import dataclass, field, fields
 import scipy
