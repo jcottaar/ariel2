@@ -52,8 +52,8 @@ def run_model_test(regenerate_reference=False):
     train_data = kgs.load_all_train_data()
     for name,model in models.items():
         data = copy.deepcopy(train_data[38:41])
-        for d in data:
-            copy.deepcopy(d).load_to_step(5, ariel_load.default_loaders())
+        #for d in data:
+        #    copy.deepcopy(d).load_to_step(5, ariel_load.default_loaders())
         #model.run_in_parallel = not regenerate_reference
         #try: model.model.run_in_parallel = not regenerate_reference
         #try: model.model.modrun_in_parallel = not regenerate_reference

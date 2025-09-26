@@ -28,6 +28,7 @@ import torch
 import inspect
 from tqdm import tqdm
 import hashlib
+from contextlib import nullcontext
 
 
 '''
@@ -72,13 +73,17 @@ n_workers = 2 if env=='kaggle' else 6
 def recommend_n_workers():
     return n_workers
 n_threads = 1
+gpu_semaphores = [nullcontext()]
 
 n_cuda_devices = torch.cuda.device_count()
 process_name = multiprocess.current_process().name
 if not multiprocess.current_process().name == "MainProcess":
     print(process_name, multiprocess.current_process()._identity[0])  
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(np.mod(multiprocess.current_process()._identity[0], n_cuda_devices))
+    my_gpu_id = np.mod(multiprocess.current_process()._identity[0], n_cuda_devices)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(my_gpu_id)
     print('CUDA_VISIBLE_DEVICES=', os.environ["CUDA_VISIBLE_DEVICES"]);
+else:
+    my_gpu_id = 0
 
 import cupy as cp
 
@@ -439,7 +444,10 @@ class Transit(BaseClass):
             assert d.loading_step == self.loading_step
             d.check_constraints()
     
-    def load_to_step(self, target_step, planet, loaders):
+    def load_to_step(self, target_step, planet, loaders):  
+        self._load_to_step(target_step, planet, loaders)
+        
+    def _load_to_step(self, target_step, planet, loaders):
         self.check_constraints()
         if target_step == self.loading_step:
             return
@@ -457,10 +465,10 @@ class Transit(BaseClass):
             self.loading_step = 0
             self.data = Transit().data
             self.check_constraints()
-            self.load_to_step(target_step, planet, loaders)
+            self._load_to_step(target_step, planet, loaders)
             return
         if target_step>self.loading_step+1:
-            self.load_to_step(target_step-1, planet, loaders)
+            self._load_to_step(target_step-1, planet, loaders)
             assert target_step==self.loading_step+1
         if target_step==self.loading_step+1:
             for loader in loaders:
@@ -577,7 +585,7 @@ General model definition
 # Function is used below, I ran into issues with multiprocessing if it was not a top-level function
 model_parallel = None
 def infer_internal_single_parallel(data):   
-    try:        
+    try:
         global model_parallel
         global sanity_checks_active
         global sanity_checks_without_errors
@@ -585,13 +593,13 @@ def infer_internal_single_parallel(data):
         global profiling
         global n_threads
         global sanity_checks
+        global gpu_semaphores
         if model_parallel is None:
-            model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads = dill_load(temp_dir+'parallel.pickle')
+            model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads, gpu_semaphores = dill_load(temp_dir+'parallel.pickle')    
         sanity_checks = dict()
         t=time.time()
         orig_step = data.transits[0].loading_step
-        from threadpoolctl import threadpool_limits
-        from contextlib import nullcontext
+        from threadpoolctl import threadpool_limits        
         if n_threads==np.inf:
             env = nullcontext()
         else:
@@ -668,19 +676,23 @@ class Model(BaseClass):
         # Subclass must implement this OR _infer_single
         if self.run_in_parallel and not disable_any_parallel and multiprocess.current_process().name == "MainProcess":  
             clear_gpu()
-            dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads))
-            try:
-                #from threadpoolctl import threadpool_limits
-                #with threadpool_limits(limits=1):  # or 2 if each task is light
+            with multiprocess.Manager() as m:
+                gpu_semaphores_local = []
+                for ii in range(n_cuda_devices):
+                    gpu_semaphores_local.append(m.Semaphore())
+                dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads, gpu_semaphores_local))
+                try:
+                    #from threadpoolctl import threadpool_limits
+                    #with threadpool_limits(limits=1):  # or 2 if each task is light                
                     with multiprocess.Pool(recommend_n_workers()) as p:                   
                         result = list(tqdm(
                             p.imap(infer_internal_single_parallel, test_data),
                             total=len(test_data),
                             desc="Processing in parallel", smoothing = 0.05
                             ))
-            except Exception as err:
-                print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
-                raise
+                except Exception as err:
+                    print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
+                    raise
             for d in result:
                 for k,v in d.diagnostics['sanity_checks_par'].items():
                     for s in v.seen_all:

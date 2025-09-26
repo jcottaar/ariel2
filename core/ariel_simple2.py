@@ -118,8 +118,9 @@ class SimpleModel(kgs.Model):
         
     def _infer_single(self, data):
         # Load data
-       # try:            
+       # try:      
             data.transits[0].load_to_step(5, data, self.loaders)
+            
 
             # Prepare stuff   
             for ii in range(2):
@@ -340,7 +341,12 @@ class SimpleModelChainer(kgs.Model):
         
     def _infer_single(self,data):
         def try_one(data, early_stop):
-            data.transits[0].load_to_step(5, data, self.model.loaders)
+            import time
+            with kgs.gpu_semaphores[kgs.my_gpu_id]:
+                #print(time.time(), kgs.process_name, 'started')   
+                data.transits[0].load_to_step(5, data, self.loaders)
+                kgs.clear_gpu()
+                #print(time.time(), kgs.process_name, 'done') 
             data_results = []
             score_results = []
             for ii in range(self.n_alternative_params+2):
