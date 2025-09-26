@@ -36,7 +36,6 @@ class ModelOptions(kgs.BaseClass):
     update_transit_pca_sigma = False 
     update_transit_nonpca_sigma = False 
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
-    transit_prior_info = 0
     FGS_AIRS_decoupling = 1
     use_old_transit_depth_prior = False
     transit_depth_alpha = 1. # 1 = tuned based on raw, 0 = tuned based on PCA rescaled
@@ -80,7 +79,6 @@ class ModelOptions(kgs.BaseClass):
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [1,2,3]
-        self.transit_prior_info = kgs.dill_load(kgs.code_dir + 'transit_depth_gp_with_pca.pickle')
         self.modify_func = lambda x,y:x
         
 

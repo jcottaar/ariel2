@@ -1,3 +1,17 @@
+'''
+This code is released under the CC BY 4.0 license, which allows you to use and alter this code (including commercially). You must, however, ensure to give appropriate credit to the original author (Jeroen Cottaar). For details, see https://creativecommons.org/licenses/by/4.0/
+
+This module provides general support functionality for my ARIEL competition work, as well as data loading functions.
+Sections:
+- Globals
+- Helper functions and classes
+- Code to handle sanity checks and error handling
+- Overall framework for data loading (implementation is in ariel_load)
+- Overall framework for modeling (implementation is in ariel_model and others)
+- Scoring functions
+'''
+
+
 import pandas as pd
 import numpy as np
 import scipy as sp
@@ -35,6 +49,7 @@ from contextlib import nullcontext
 Determine environment and globals
 '''
 
+# Where are we running?
 if os.path.isdir('/mnt/d/ariel2/'):
     env = 'local'
     d_drive = '/mnt/d/'    
@@ -43,21 +58,20 @@ elif os.path.isdir('d:/'):
     d_drive = 'd:/'   
 else:
     env = 'kaggle'
-print(env)
 
-profiling = False
-debugging_mode = 1
-verbosity = 1
-disable_any_parallel = False
+profiling = False # If true, enabling line-by-line profiling for functions decorated with @profile_each_line
+debugging_mode = 1 # Can be set to 0, 1, or 2 to configure the detail of inline checks.
+disable_any_parallel = False # If true, will not use multiple processes
 
+# Find our data locations
 match env:
     case 'local' | 'local_windows':
-        data_dir = d_drive+'/ariel2/data/'
+        data_dir = d_drive+'/ariel2/data/' # Location of train/test data
         temp_dir = d_drive+'/ariel2/temp/'             
-        code_dir = d_drive+'/ariel2/code/core/' 
-        csv_dir = d_drive+'/ariel2/'
-        calibration_dir = d_drive+'/ariel2/calibration/'
-        loader_cache_dir = d_drive+'/ariel2/loader_cache/'
+        code_dir = d_drive+'/ariel2/code/core/' # Our own location
+        csv_dir = d_drive+'/ariel2/' # Where to write output
+        calibration_dir = d_drive+'/ariel2/calibration/' # Where calibration files are stored
+        loader_cache_dir = d_drive+'/ariel2/loader_cache/' # Where to cache loaded data for speed
     case 'kaggle':
         data_dir = '/kaggle/input/ariel-data-challenge-2025/'
         temp_dir = '/temp/'           
@@ -68,14 +82,13 @@ match env:
 os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
-# How many workers is optimal for parallel pool?
-n_workers = 2 if env=='kaggle' else 6
-def recommend_n_workers():
-    return n_workers
-n_threads = 1
-gpu_semaphores = [nullcontext()]
+n_workers = 4 if env=='kaggle' else 6 # How many workers is optimal for parallel pool?
+n_threads = 1 # One thread per process
+gpu_semaphores = [nullcontext()] # Semaphores to prevent multiple processes from using the GPU at once
 
-n_cuda_devices = torch.cuda.device_count()
+n_cuda_devices = torch.cuda.device_count() # How many GPUs?
+
+# Configure which GPU to use
 process_name = multiprocess.current_process().name
 if not multiprocess.current_process().name == "MainProcess":
     print(process_name, multiprocess.current_process()._identity[0])  
@@ -85,8 +98,10 @@ if not multiprocess.current_process().name == "MainProcess":
 else:
     my_gpu_id = 0
 
+# Only now can we import cupy - otherwise it would use all GPUs
 import cupy as cp
 
+# Load GIT commit ID
 if not env=='kaggle':
     import git 
     repo = git.Repo(search_parent_directories=True)
@@ -99,7 +114,8 @@ else:
 Helper classes and functions
 '''
 
-def list_attrs(obj):
+def list_attrs(obj):    
+    # List attributes of a class
     for name, val in inspect.getmembers(obj):
         if name.startswith("_"):
             continue
@@ -108,18 +124,20 @@ def list_attrs(obj):
         #     continue
         print(f"{name} = {val}")
 
-def remove_and_make_dir(path):
+# Remove a directory if it exists and then remake it
+def remove_and_make_dir(path):    
     try: shutil.rmtree(path)
     except: pass
     os.makedirs(path)
 
-# Helper class - doesn't allow new properties after construction, and enforces property types. Partially written by ChatGPT.
 @dataclass
 class BaseClass:
+    # Helper class - doesn't allow new properties after construction, and enforces property types. Partially written by ChatGPT.
     _is_frozen: bool = field(default=False, init=False, repr=False)
     comment:str = field(init=True, default='')
 
     def check_constraints(self, debugging_mode_offset = 0):
+        # Do the class properties behave as expected?
         global debugging_mode
         debugging_mode = debugging_mode+debugging_mode_offset
         try:
@@ -131,9 +149,11 @@ class BaseClass:
             debugging_mode = debugging_mode - debugging_mode_offset
 
     def _check_constraints(self):
+        # To be implmented by subclass
         pass
 
     def _check_types(self):
+        # Check types follow type hints
         type_hints = typing.get_type_hints(self.__class__)
         for field_info in fields(self):
             field_name = field_info.name
@@ -155,15 +175,15 @@ class BaseClass:
             raise AttributeError(f"Cannot add new attribute '{key}' to frozen instance")
         super().__setattr__(key, value)
 
-# Small wrapper for dill loading
 def dill_load(filename):
+    # Small wrapper for dill loading
     filehandler = open(filename, 'rb');
     data = dill.load(filehandler)
     filehandler.close()
     return data
 
-# Small wrapper for dill saving
 def dill_save(filename, data):
+    # Small wrapper for dill saving
     filehandler = open(filename, 'wb');
     data = dill.dump(data, filehandler)
     filehandler.close()
@@ -171,6 +191,7 @@ def dill_save(filename, data):
 
 @decorator
 def profile_each_line(func, *args, **kwargs):
+    # Profile line-by-line if profiling==True
     if not profiling:
         return func(*args, **kwargs)
     profiler = LineProfiler()
@@ -183,24 +204,22 @@ def profile_each_line(func, *args, **kwargs):
         profiler.print_stats()
         raise
 
-def profile_print(string):
-    if profiling: print(string)
-
+# Helper functions - not used in submission
 def download_kaggle_dataset(dataset_name, destination, skip_download=False):
     remove_and_make_dir(destination)
     if not skip_download:
         subprocess.run('kaggle datasets download ' + dataset_name + ' --unzip -p ' + destination, shell=True)
     subprocess.run('kaggle datasets metadata -p ' + destination + ' ' + dataset_name, shell=True)
-
 def upload_kaggle_dataset(source):
     if env=='local_windows':
         source=source.replace('/', '\\')
     subprocess.run('kaggle datasets version -p ' + source + ' -m ''Update''', shell=True)
 
 def rms(array):
+    # Compute root mean square
     return np.sqrt(np.mean(array**2))
 
-def ismembertol(a,b,reltol=1e-4):
+def ismembertol(a,b,reltol=1e-4):    
     # Returns array x of length len(a), subh that b[x]=a. Entries of a that are not in b get value -1. Not particularly efficient.
     b_unique,inds_unique = np.unique(b, return_index = True)
     def find_element(el):
@@ -211,13 +230,14 @@ def ismembertol(a,b,reltol=1e-4):
             return -1
     return np.array([find_element(x) for x in a])
 
-
 def moving_average(a, n):
+    # Compute moving average along first axis
     ret = np.cumsum(a, dtype=float, axis=0)
     ret[n:, ...] -= ret[:-n, ...]
     return ret[n - 1:, ...] / n
 
 def gaussian_2D_filter_with_nans(U, sigma):
+    # Smooth data, used for plotting
     # Not used in model, but useful to have around   
     # Source: https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
     truncate=2.0   # truncate filter at this many sigmas
@@ -232,38 +252,43 @@ def gaussian_2D_filter_with_nans(U, sigma):
     return Z
 
 def add_cursor(sc):
-
+    # Add interactive cursor to plots
     import mplcursors
     cursor = mplcursors.cursor(sc, hover=True)
-
     @cursor.connect("add")
     def on_add(sel):
         i = sel.index
         sel.annotation.set_text(f"index={i}")
 
-
 def to_cpu(array):
+    # Move array to CPU if on GPU
     if isinstance(array, cp.ndarray):
         return array.get()
     else:
         return array
 
 def to_gpu(array):
+    # Move array to GPU if on CPU
     if isinstance(array, cp.ndarray):
         return array
     else:
         return cp.array(array)
     
 def clear_gpu():
+    # Clear caches on GPU
     cache = cp.fft.config.get_plan_cache()
     cache.clear()
     cp.get_default_memory_pool().free_all_blocks()
+    
 '''
 Sanity checks and error handling
+
+Throughout the code, sanity checks are performed to ensure nothing weird is happening. Main purpose is to avoid nasty surprises on the test set.
+This is couple with functionality to raise error codes during submission and retrieve them, via the submission score.
 '''
 
-class ArielException(Exception):
-    # Exception class for failed sanity checks
+class ArielException(Exception):    
+    # Exception class specific to our modeling
     code = 0
     def __init__(self,code,message):
         self.code = code
@@ -273,7 +298,8 @@ score_base = 0.264
 score_noise = 0.121
 noise_fac_used = 1.5
 error_code_conversion = 5
-def raise_error_code(exception):    
+def raise_error_code(exception):  
+    # Raise exception; run error_code_from_score(score) on the public test set score to retrieve exception.code
     if not env=='kaggle':
         raise exception
     print('ARIEL exception ', exception.code, exception.message)
@@ -282,7 +308,6 @@ def raise_error_code(exception):
     dill_save(temp_dir + '/noise_fac.pickle', noise_fac)
     import subprocess
     subprocess.run('jupyter nbconvert --execute --debug --to html /kaggle/input/my-ariel2-library/reference_submission.ipynb', shell=True)
-    
 def error_code_from_score(score):
     return (score_base-score)/(score_base-score_noise)*noise_fac_used**2*error_code_conversion
 
@@ -290,8 +315,8 @@ sanity_checks_active = True # Whether to throw errors if we see weird things in 
 sanity_checks_without_errors = False # Perform the sanity checks above but don't throw errors
 sanity_checks = dict() # Global object to keep track of all sanity checks. 
     
-# Class to keep track of sanity checks
 class SanityCheckValue:
+    # Class to keep track of sanity checks
     def __init__(self, name, code, limit):
         self.seen = [np.inf, -np.inf]
         self.limit = limit
@@ -299,8 +324,8 @@ class SanityCheckValue:
         self.code = code
         self.seen_all = []
 
-# Perform a sanity check; this function is used throughout the data loading and modeling functions.
 def sanity_check(f,to_check,name,code,limit,raise_error=True):
+    # Perform a sanity check; this function is used throughout the data loading and modeling functions.
     # f: function to apply to to_check
     # to_check: value to check
     # name: label for the sanity check
@@ -322,13 +347,13 @@ def sanity_check(f,to_check,name,code,limit,raise_error=True):
         if sanity_checks[name].seen[1] < value:
             sanity_checks[name].seen[1] = value
         
-
-# Show the minimum and miximum values seen for all sanity checks
 def print_sanity_checks():
+    # Show the minimum and miximum values seen for all sanity checks
     for m in list(sanity_checks.keys()):
         print(m, sanity_checks[m].seen, sanity_checks[m].limit, sanity_checks[m].code)
-        
+
 def plot_sanity_checks():
+    # Plot observed sanity checks
     for k,v in sanity_checks.items():
         plt.figure()
         plt.grid(True)
@@ -356,9 +381,9 @@ class Planet(BaseClass):
     # Holds loaded or estimated planet properties (atmospheric, stellar, and orbital), as well as the transit measurements
     planet_id: int = field(init=True, default=None) # Unique identifier for the star-planet system.
     is_train: bool = field(init=True, default=None) # Whether this is a train or test planet.
-    transit_params: object = field(init=True, default=None)
+    transit_params: object = field(init=True, default=None) # Transit parameters (period etc.)
     
-    spectrum: np.ndarray = field(init=True, default=None) # (Rp/Rs)^2, can be None or 1D array with lenght of wavelengths
+    spectrum: np.ndarray = field(init=True, default=None) # (Rp/Rs)^2, can be None or 1D array with length of wavelengths
     spectrum_cov: np.ndarray = field(init=True, default=None) # covariance matrix for uncertainty in spectrum, can be None or 2D array
     
     transits: list = field(init=True, default_factory = list) # transit observations for this planet
@@ -367,7 +392,7 @@ class Planet(BaseClass):
     
     def __post_init__(self):
         super().__post_init__()
-        import ariel_transit
+        import ariel_transit # Can only import now to avoid circular import
         self.transit_params = ariel_transit.TransitParams()        
 
     
@@ -382,6 +407,7 @@ class Planet(BaseClass):
             t.check_constraints()
     
     def load_orbital_and_stellar_properties(self):
+        # Load data for this planet (except for the sensor readings)
         if self.is_train:
             row = train_star_info[train_star_info['planet_id']==self.planet_id]
         else:
@@ -399,6 +425,7 @@ class Planet(BaseClass):
         assert self.transit_params.e==0.
         
     def load_spectrum(self):
+        # Load the train labels
         assert self.is_train
         self.spectrum = train_labels[train_star_info['planet_id']==self.planet_id].to_numpy()
         assert self.spectrum.shape[0]==1    
@@ -407,16 +434,19 @@ class Planet(BaseClass):
         self.diagnostics['training_spectrum'] = copy.deepcopy(self.spectrum)
     
     def unload_spectrum(self):
+        # Unload data to prevent peeking
         self.spectrum = None
         self.spectrum_cov = None
         
     def get_directory(self):
+        # Where is our data?
         if self.is_train:
             return data_dir + '/train/' + str(self.planet_id) + '/'
         else:
             return data_dir + '/test/' + str(self.planet_id) + '/'
         
     def load_to_step(self, target_step, loaders):
+        # Load sensor reading to a specified preprocessing step (see below)
         for t in self.transits:
             t.load_to_step(target_step, self, loaders)
         
@@ -428,12 +458,12 @@ class Transit(BaseClass):
     # 0: unloaded
     # 1: raw parquet loaded
     # 2: pixel level corrections up to correlated double sampling done
-    # 3: full-sensor corrections done
-    # 4: time binning done
+    # 3: time binning done
+    # 4: full-sensor corrections done
     # 5: wavelength binning done
     data: list = field(init=True, default_factory = lambda:[SensorData(is_FGS=True), SensorData(is_FGS=False)]) # 0: FGS, 1: AIRS
     
-    diagnostics: dict = field(init=True, default_factory = dict)
+    diagnostics: dict = field(init=True, default_factory = dict) # any extra information we want to store
     
     def _check_constraints(self):
         assert len(self.data)==2
@@ -443,34 +473,35 @@ class Transit(BaseClass):
             assert(isinstance(d, SensorData))
             assert d.loading_step == self.loading_step
             d.check_constraints()
-    
-    def load_to_step(self, target_step, planet, loaders):  
-        self._load_to_step(target_step, planet, loaders)
         
-    def _load_to_step(self, target_step, planet, loaders):
+    def load_to_step(self, target_step, planet, loaders):
+        # Load sensor reading to a specified preprocessing step (see above)
         self.check_constraints()
         if target_step == self.loading_step:
+            # Nothing to do
             return
         caching = target_step in loaders[0].cache_steps
         if caching:
+            # Are we already cached? In that case just load that.
             cache_file_name = loader_cache_dir + '/' + hashlib.sha256(dill.dumps(loaders)).hexdigest()[:10] + '_' + str(planet.planet_id) + '_' + str(self.observation_number) + '_' + str(planet.is_train) + '_' + str(target_step) +'.pickle';
-            #print(cache_file_name)
             if os.path.isfile(cache_file_name):
                 (self.data, self.diagnostics) = dill_load(cache_file_name)
                 self.loading_step = target_step
                 self.check_constraints()
                 return
-            #cache_file_name = loader_cache_dir + '/' + 
         if target_step<self.loading_step:
+            # Are we already preprocessed further than the target step? In that case, go back to 0 and work from there.
             self.loading_step = 0
             self.data = Transit().data
             self.check_constraints()
-            self._load_to_step(target_step, planet, loaders)
+            self.load_to_step(target_step, planet, loaders)
             return
         if target_step>self.loading_step+1:
-            self._load_to_step(target_step-1, planet, loaders)
+            # Are we asked to move more than one step? Then call ourself recursively.
+            self.load_to_step(target_step-1, planet, loaders)
             assert target_step==self.loading_step+1
         if target_step==self.loading_step+1:
+            # Progress a single step.
             for loader in loaders:
                 assert isinstance(loader, TransitLoader)
                 loader.check_constraints()                
@@ -479,6 +510,7 @@ class Transit(BaseClass):
             self.loading_step += 1
             self.check_constraints()
         if caching:
+            # Save cache if configured.
             assert not os.path.isfile(cache_file_name)
             dill_save(cache_file_name, (self.data, self.diagnostics))
         assert self.loading_step == target_step
@@ -521,7 +553,7 @@ class SensorData(BaseClass):
 class TransitLoader(BaseClass):
     # Manages loading transit data. User must fill in the classes below.
     
-    cache_steps: list = field(init=True, default_factory = lambda:[5])
+    cache_steps: list = field(init=True, default_factory = lambda:[5]) # at which steps do we want to cache results on disk?
     
     load_raw_data: BaseClass = field(init=True, default=None) # must be callable
     apply_pixel_corrections: BaseClass = field(init=True, default=None) # must be callable
@@ -532,6 +564,7 @@ class TransitLoader(BaseClass):
     noise_scaling = 1. # for testing
     
     def progress_one_step(self, data, planet, observation_number):
+        # Do the specified preprocessing step
         match data.loading_step:
             case 0:
                 self.load_raw_data(data, planet, observation_number)
@@ -550,6 +583,7 @@ class TransitLoader(BaseClass):
             
 
 def load_data(planet_id, is_train):
+    # Load all data except the sensor readings
     data = Planet()
     data.planet_id = planet_id
     data.is_train = is_train
@@ -560,6 +594,7 @@ def load_data(planet_id, is_train):
     else:
         data.diagnostics['training_spectrum'] = None
         
+    # Count transits
     files = glob.glob(data.get_directory()+'*')
     assert len(files)%4 == 0
     n_transits = len(files)//4
@@ -573,19 +608,22 @@ def load_data(planet_id, is_train):
     return data
 
 def load_all_train_data():
-    return [load_data(ind,True) for ind in train_star_info['planet_id'] if ind!=2486733311]
+    # Load the train data
+    return [load_data(ind,True) for ind in train_star_info['planet_id'] if ind!=2486733311] # 2486733311: high FGS foreground (can actually be modeled fine)
 
 def load_all_test_data():
+    # Load the test data
     return [load_data(int(ind),False) for ind in test_star_info['planet_id']]
 
     
 '''
 General model definition
 '''
-# Function is used below, I ran into issues with multiprocessing if it was not a top-level function
 model_parallel = None
 def infer_internal_single_parallel(data):   
+    # Modified copy of Model.infer - I ran into issues using it as a bound function, so made it standalone
     try:
+        # Load globals
         global model_parallel
         global sanity_checks_active
         global sanity_checks_without_errors
@@ -596,18 +634,24 @@ def infer_internal_single_parallel(data):
         global gpu_semaphores
         if model_parallel is None:
             model_parallel, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads, gpu_semaphores = dill_load(temp_dir+'parallel.pickle')    
+            
+        # Run inference
         sanity_checks = dict()
         t=time.time()
         orig_step = data.transits[0].loading_step
-        from threadpoolctl import threadpool_limits        
+        from threadpoolctl import threadpool_limits                
         if n_threads==np.inf:
             env = nullcontext()
         else:
             env = threadpool_limits(limits=n_threads)                 
         with env:
             data = model_parallel._infer_single(data)
-        data.load_to_step(orig_step,model_parallel.loaders)        
+            
+        # Return data to its original state
+        data.load_to_step(orig_step,model_parallel.loaders)   
+        # Export sanity checks (for diagnostics)
         data.diagnostics['sanity_checks_par'] = sanity_checks
+        
         return data
     except Exception as err:
         import traceback
@@ -621,15 +665,15 @@ def infer_internal_single_parallel(data):
 class Model(BaseClass):
     # Loads one or more cryoET measuerements
     state: int = field(init=False, default=0) # 0: untrained, 1: trained    
-    run_in_parallel: bool = field(init=True, default=False) 
+    run_in_parallel: bool = field(init=True, default=False) # parallelize over planets?
 
-    loaders: list = field(init=True, default=None)
+    loaders: list = field(init=True, default=None) # loaders to use to import sensor readings
     
-    use_known_spectrum: bool = field(init=True, default=False)
+    use_known_spectrum: bool = field(init=True, default=False) # allow model ot access the training labels?
     
     def __post_init__(self):
         super().__post_init__()
-        import ariel_load
+        import ariel_load # avoid circular import
         self.loaders = ariel_load.default_loaders()        
 
     def _check_constraints(self):
@@ -639,33 +683,37 @@ class Model(BaseClass):
             load.check_constraints()
 
     def train(self, train_data):
+        # Train the model on the training data; main implementation in _train, to be implemented by subclass
         train_data = copy.deepcopy(train_data)
         for t in train_data:            
             t.check_constraints()
         if self.state>=1:
-            return        
-        #if self.seed is None:
-        #    self.seed = np.random.default_rng(seed=None).integers(0,1e6).item()    
+            # Already trained
+            return           
         self._train(train_data)
         self.state = 1
         self.check_constraints()        
 
     def _train(self,train_data):
         pass
-        # No training needed if not overridden
 
-    #@profile_each_line
     def infer(self, test_data):
+        # Infer an array of planets
         assert self.state == 1
         test_data = copy.deepcopy(test_data)
 
+        # Check inputs and remove training labels to prevent peeking
         for t in test_data:
             if self.use_known_spectrum:
                 assert not t.spectrum is None
             else:
                 t.unload_spectrum()
             t.check_constraints()
+            
+        # Run the inference as implemented by subclass
         test_data_inferred = self._infer(test_data)
+        
+        # Check outputs
         assert([d.planet_id for d in test_data]==[d.planet_id for d in test_data_inferred])
         for t in test_data_inferred:
             t.check_constraints()
@@ -673,18 +721,20 @@ class Model(BaseClass):
         return test_data_inferred
 
     def _infer(self, test_data):
-        # Subclass must implement this OR _infer_single
+        # Subclass must implement this OR _infer_single, depending on if it needs to run on the full test set or is independent per planet
         if self.run_in_parallel and not disable_any_parallel and multiprocess.current_process().name == "MainProcess":  
+            # Run in parallel pool
             clear_gpu()
             with multiprocess.Manager() as m:
+                # Set up semaphores to manage GPU access and write globals
                 gpu_semaphores_local = []
                 for ii in range(n_cuda_devices):
                     gpu_semaphores_local.append(m.Semaphore())
                 dill_save(temp_dir + '/parallel.pickle', (self, sanity_checks_active, sanity_checks_without_errors, debugging_mode, profiling, n_threads, gpu_semaphores_local))
-                try:
-                    #from threadpoolctl import threadpool_limits
-                    #with threadpool_limits(limits=1):  # or 2 if each task is light                
-                    with multiprocess.Pool(recommend_n_workers()) as p:                   
+                
+                # Dispatch inference
+                try:             
+                    with multiprocess.Pool(n_workers) as p:                   
                         result = list(tqdm(
                             p.imap(infer_internal_single_parallel, test_data),
                             total=len(test_data),
@@ -693,12 +743,14 @@ class Model(BaseClass):
                 except Exception as err:
                     print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
                     raise
+            # Import sanity checks
             for d in result:
                 for k,v in d.diagnostics['sanity_checks_par'].items():
                     for s in v.seen_all:
                         sanity_check(lambda x:x, s, v.name, v.code, v.limit, raise_error=False)
             
         else:
+            # Infere one-by-one
             result = []
             for d in tqdm(test_data, desc="Inferring", disable = len(test_data)<=1, smoothing = 0.05):     
                 data=copy.deepcopy(d)
@@ -716,7 +768,12 @@ class Model(BaseClass):
                 result.append(data)                
         return result
     
+'''
+Scoring functions
+'''
+
 def make_submission_dataframe(data, include_sigma=True):
+    # Write a submission dataframe in the specified format
     submission = pd.read_csv(data_dir + '/sample_submission.csv')
     submission = submission[0:0]    
     if not include_sigma:
@@ -730,99 +787,29 @@ def make_submission_dataframe(data, include_sigma=True):
             submission.loc[i] = np.concatenate(([d.planet_id], spec_clipped))
     submission = submission.astype({'planet_id':'int64'})
     return submission
-
-def data_to_mats(data, reference_data):
-    y_true = np.stack([d.spectrum for d in reference_data])
-    y_pred = np.stack([d.spectrum for d in data])
-    cov_pred = np.stack([d.spectrum_cov for d in data])
-    
-    
-    return cp.array(y_true),cp.array(y_pred),cp.array(cov_pred)
-
-def mats_to_data(data, reference_data, mats):
-    y_true,y_pred,cov_pred = mats
-    for d, rd, yt, yp, covp in zip(data,reference_data,y_true,y_pred,cov_pred):
-        
-        rd.spectrum = yt.get()
-        d.spectrum = yp.get()
-        d.spectrum_cov = covp.get()
-        
-    
-    if debugging_mode>=2:
-        mats_test = data_to_mats(data, reference_data)
-        for ii in range(3):
-            assert(cp.all(mats[ii]==mats_test[ii]))
-    
-
-
-#@profile_each_line
-def score_metric_fast(y_true, y_pred, cov_pred, fgs_weight=57.846):
-    """
-    y_true:  (N, W) cupy.ndarray
-    y_pred:  (N, W) cupy.ndarray
-    cov_pred: (N, W, W) cupy.ndarray  or list/tuple of (W, W) CuPy arrays/sparse matrices
-    returns: Python float (copied from GPU)
-    """
-    # Ensure GPU arrays
-    sigma_pred = cp.sqrt(cp.diagonal(cov_pred, axis1=-2, axis2=-1))  # (N, W)
-
-    N, W = y_true.shape
-
-    # Fixed per-wavelength sigma for the "true" model
-    sigma_true = cp.concatenate(
-        (cp.array([1e-6], dtype=y_true.dtype),
-         cp.ones(W - 1, dtype=y_true.dtype) * 1e-5)
-    )  # shape (W,)
-
-    # Baseline (naive) mean/sigma across all entries
-    naive_mean = y_true.mean()
-    naive_sigma = y_true.std()
-
-    # Numerically safe normal logpdf on GPU
-    eps = cp.finfo(y_true.dtype).tiny
-
-    def norm_logpdf(x, loc, scale):
-        s = cp.maximum(scale, eps)
-        z = (x - loc) / s
-        return -0.5 * (cp.log(2 * cp.pi) + 2 * cp.log(s) + z**2)
-
-    # Broadcast shapes:
-    # y_true, y_pred, sigma_pred -> (N, W)
-    # sigma_true -> (W,) (broadcast to (N, W))
-    # naive_* -> scalars (broadcast to (N, W))
-    GLL_pred = norm_logpdf(y_true, y_pred, sigma_pred)
-    GLL_true = norm_logpdf(y_true, y_true, sigma_true)
-    GLL_mean = norm_logpdf(y_true, naive_mean, naive_sigma)
-
-    ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)
-
-    # Per-wavelength weights (duplicate across rows)
-    w = cp.concatenate(
-        (cp.array([fgs_weight], dtype=y_true.dtype),
-         cp.ones(W - 1, dtype=y_true.dtype))
-    )  # (W,)
-    Wmat = cp.broadcast_to(w, ind_scores.shape)  # (N, W)
-
-    submit_score = cp.average(ind_scores, weights=Wmat)  # scalar on GPU
-    return float(submit_score.get())
-    
+def write_submission_csv(df):
+    # Write dataframe above to CSV
+    df = copy.deepcopy(df)
+    df = df.set_index("planet_id")
+    df.to_csv(csv_dir + '/submission.csv')
 
 def score_metric(data,reference_data,print_results=True):
+    # Score according to competition metric and output some diagnostics
+    # data: inferred data
+    # reference_data: ground truth
+    
     solution = make_submission_dataframe(reference_data, include_sigma=False)
     submission = make_submission_dataframe(data)
     
     solution_np = solution.iloc[:,1:284].to_numpy()
     submission_np = submission.iloc[:,1:284].to_numpy()
     
-    #rms_error = rms(solution_np-submission.iloc[:,1:284].to_numpy())
     rms_error_fgs = rms(solution_np[:,:1]-submission_np[:,:1])
     rms_fgs_per = np.abs(solution_np[:,:1]-submission_np[:,:1])
     rms_error_fgs_median = np.median(rms_fgs_per)
     
-    
     rms_error_airs = rms(solution_np[:,1:]-submission_np[:,1:])
     rms_error_airs_per = np.sqrt(np.mean( (solution_np[:,1:]-submission_np[:,1:])**2, 1 ))
-    #print(rms_error_airs_per.shape)
     rms_error_airs_median = np.median(rms_error_airs_per)
     
     diff_airs = solution_np[:,1:]-submission_np[:,1:]
@@ -840,17 +827,8 @@ def score_metric(data,reference_data,print_results=True):
         print(f"mRMS error AIRS: {1e6*rms_error_airs_median:.5f} ppm")
         print(f"RMS error AIRSv: {1e6*rms_error_airs_var:.5f} ppm")
         print(f"mRMS error AIRSv:{1e6*rms_error_airs_var_median:.5f} ppm")
-        
-    #if debugging_mode>=1:
-    #    assert(score - score_metric_fast(*data_to_mats(data,reference_data)) < 1e-9)
     
     return score,rms_error_fgs,rms_error_airs
-
-def write_submission_csv(df):
-    df = copy.deepcopy(df)
-    df = df.set_index("planet_id")
-    df.to_csv(csv_dir + '/submission.csv')
-        
 
 class ParticipantVisibleError(Exception):
     pass
@@ -920,3 +898,76 @@ def _score(
     weights = weights * np.ones_like(ind_scores)
     submit_score = np.average(ind_scores, weights=weights)
     return float(submit_score) # clipping between 0 and 1 removed
+
+
+def data_to_mats(data, reference_data):
+    # Write inferred data and ground truth to GPU in matrix form
+    y_true = np.stack([d.spectrum for d in reference_data])
+    y_pred = np.stack([d.spectrum for d in data])
+    cov_pred = np.stack([d.spectrum_cov for d in data]) 
+    return cp.array(y_true),cp.array(y_pred),cp.array(cov_pred)
+
+def mats_to_data(data, reference_data, mats):
+    # Inverse of function above
+    y_true,y_pred,cov_pred = mats
+    for d, rd, yt, yp, covp in zip(data,reference_data,y_true,y_pred,cov_pred):
+        rd.spectrum = yt.get()
+        d.spectrum = yp.get()
+        d.spectrum_cov = covp.get()
+    if debugging_mode>=2:
+        mats_test = data_to_mats(data, reference_data)
+        for ii in range(3):
+            assert(cp.all(mats[ii]==mats_test[ii]))
+    
+
+def score_metric_fast(y_true, y_pred, cov_pred, fgs_weight=57.846):
+    # score_metric on GPU and in matrix form, much faster
+    """
+    y_true:  (N, W) cupy.ndarray
+    y_pred:  (N, W) cupy.ndarray
+    cov_pred: (N, W, W) cupy.ndarray  or list/tuple of (W, W) CuPy arrays/sparse matrices
+    returns: Python float (copied from GPU)
+    """
+    # Ensure GPU arrays
+    sigma_pred = cp.sqrt(cp.diagonal(cov_pred, axis1=-2, axis2=-1))  # (N, W)
+
+    N, W = y_true.shape
+
+    # Fixed per-wavelength sigma for the "true" model
+    sigma_true = cp.concatenate(
+        (cp.array([1e-6], dtype=y_true.dtype),
+         cp.ones(W - 1, dtype=y_true.dtype) * 1e-5)
+    )  # shape (W,)
+
+    # Baseline (naive) mean/sigma across all entries
+    naive_mean = y_true.mean()
+    naive_sigma = y_true.std()
+
+    # Numerically safe normal logpdf on GPU
+    eps = cp.finfo(y_true.dtype).tiny
+
+    def norm_logpdf(x, loc, scale):
+        s = cp.maximum(scale, eps)
+        z = (x - loc) / s
+        return -0.5 * (cp.log(2 * cp.pi) + 2 * cp.log(s) + z**2)
+
+    # Broadcast shapes:
+    GLL_pred = norm_logpdf(y_true, y_pred, sigma_pred)
+    GLL_true = norm_logpdf(y_true, y_true, sigma_true)
+    GLL_mean = norm_logpdf(y_true, naive_mean, naive_sigma)
+
+    ind_scores = (GLL_pred - GLL_mean) / (GLL_true - GLL_mean)
+
+    # Per-wavelength weights (duplicate across rows)
+    w = cp.concatenate(
+        (cp.array([fgs_weight], dtype=y_true.dtype),
+         cp.ones(W - 1, dtype=y_true.dtype))
+    )  # (W,)
+    Wmat = cp.broadcast_to(w, ind_scores.shape)  # (N, W)
+
+    submit_score = cp.average(ind_scores, weights=Wmat)  # scalar on GPU
+    return float(submit_score.get())
+    
+
+        
+

@@ -454,6 +454,8 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     remove_background_based_on_pixels = False
     remove_background_pixels = 100
     
+    mean_removal_residual_mode = 2
+    
     #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):        
         assert self.inpainting_time # actually done above
@@ -473,7 +475,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
             else:
                 data_pca = data.data
                 wavelength_ids = np.arange(1,283)
-            data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
+            data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=self.mean_removal_residual_mode)[1]  
             data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)    
             
         else:
