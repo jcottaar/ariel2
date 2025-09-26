@@ -1,7 +1,7 @@
 import kaggle_support as kgs
 import ariel_gp
 import ariel_pca
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 import scipy
 import numpy as np
 import cupy as cp
@@ -123,7 +123,7 @@ class Fudger3(kgs.Model):
     
     def _infer(self,data):
         self._is_multi_transit = cp.array([len(d.transits)>1 for d in data])
-        if not self._cached_planet_id is None and [d.planet_id for d in data]==self._cached_planet_id:
+        if self._cached_planet_id is not None and [d.planet_id for d in data]==self._cached_planet_id:
             data = copy.deepcopy(self._cached_result)
         else:
             data = self.model.infer(data)

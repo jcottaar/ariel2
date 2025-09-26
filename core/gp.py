@@ -16,7 +16,6 @@ import pandas as pd
 import cupy as cp
 import cupyx.scipy.sparse
 import copy
-import matplotlib.pyplot as plt
 import kaggle_support as kgs # used for some support functions
 
 if kgs.env == 'kaggle':
@@ -175,7 +174,7 @@ class Model(kgs.BaseClass):
         assert obs.number_of_observations == self.number_of_observations
 
         if get_prior_distribution:
-            if not self.cached_prior_distribution is None:
+            if self.cached_prior_distribution is not None:
                 prior_matrices = copy.deepcopy(self.cached_prior_distribution)
             else:
                 prior_matrices = self.get_prior_distribution_internal(obs)
@@ -186,7 +185,7 @@ class Model(kgs.BaseClass):
             prior_matrices.prior_mean = np.zeros((prior_matrices.number_of_parameters))
             prior_matrices.prior_precision_matrix = sparse_matrix((prior_matrices.number_of_parameters,prior_matrices.number_of_parameters))
         if get_observation_relationship:
-            if not self.cached_observation_relationship is None:
+            if self.cached_observation_relationship is not None:
                 prior_matrices_obs = copy.deepcopy(self.cached_observation_relationship)
             else:
                 prior_matrices_obs = self.get_observation_relationship_internal(obs)
@@ -931,16 +930,16 @@ def log_likelihood(model, obs, cholQ=None, get_value=True, get_gradients=False):
     J = J[:,non_noise_indices]
  
     if cholQ == None:
-        Q = P+J.T@N@J;
-        cholQ = robust_cholesky(Q);
-    cholP = robust_cholesky(P);    
+        Q = P+J.T@N@J
+        cholQ = robust_cholesky(Q)
+    cholP = robust_cholesky(P)    
 
     rhs = J.T@(N@y)
     mu = cholQ[1]@(cholQ[0].solve_A(cholQ[1]@rhs))
     res = y - J@mu
 
     if get_value:
-        cholN = robust_cholesky(N);
+        cholN = robust_cholesky(N)
         value = 0
         value = value + 0.5*cholN[0].logdet() - np.sum(np.log(cholN[1].diagonal()))
         value = value - 0.5*(res.T@N@res)

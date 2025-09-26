@@ -1,12 +1,7 @@
-import pandas as pd
 import numpy as np
-import scipy as sp
 import cupy as cp
 import copy
-from dataclasses import dataclass, field, fields
 import kaggle_support as kgs
-import pyarrow.parquet
-from astropy.stats import sigma_clip
 import matplotlib.pyplot as plt
 import ariel_numerics
 import cupyx.scipy.sparse

@@ -200,14 +200,14 @@ def define_prior(obs, model_options, data):
     model_FGS.model = gp.Uncorrelated()
     model_FGS.model.features = ['wavelength']
     model_FGS.model.sigma = (model_options.transit_depth_alpha * transit_depth_prior[0][0] + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][0]).item()
-    if not model_options.new_transit_depth_FGS_sigma_override is None:
+    if model_options.new_transit_depth_FGS_sigma_override is not None:
         model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
     model_FGS.model.sigma *= model_options.FGS_AIRS_decoupling
 
     model_FGS.scaling_factor *= model_options.FGS_transit_scaling
     model_AIRS.scaling_factor *= model_options.AIRS_transit_scaling
     
-    if not model_options.transit_pca_components is None:
+    if model_options.transit_pca_components is not None:
         model_variation_pca = gp.ParameterScaler()
         model_variation_pca.scaler = 1e-4
         model_variation_pca.model = gp.FixedBasis()
@@ -225,7 +225,7 @@ def define_prior(obs, model_options, data):
     m['variation'] = gp.CompoundNamed()
     mm = dict()
     mm['non_pca'] = model_variation_non_pca
-    if not model_options.transit_pca_components is None:
+    if model_options.transit_pca_components is not None:
         mm['pca'] = model_variation_pca
     m['variation'].m=mm
     m['variation'].update_scaling = model_options.update_transit_variation_sigma # Determine if we tune the magnitude of the variation, essentially scaling all sigma values within
@@ -297,15 +297,15 @@ def define_prior(obs, model_options, data):
     # Transit window: use the ingress and egress times estimates during preprocessing 
     model.m['signal'].m['transit'].transit_params = [data.diagnostics['transit_params']]
     model.m['signal'].m['transit'].transit_params[0][0].t0 = model.m['signal'].m['transit'].transit_params[0][1].t0
-    if not model_options.FGS_transit_override is None:
+    if model_options.FGS_transit_override is not None:
         model.m['signal'].m['transit'].transit_params[0][0].limb_dark = model_options.FGS_transit_override[0]
         model.m['signal'].m['transit'].transit_params[0][0].u = 0.1*np.ones(model_options.FGS_transit_override[1])
-    if not model_options.AIRS_transit_override is None:
+    if model_options.AIRS_transit_override is not None:
         model.m['signal'].m['transit'].transit_params[0][1].limb_dark = model_options.AIRS_transit_override[0]
         model.m['signal'].m['transit'].transit_params[0][1].u = 0.1*np.ones(model_options.AIRS_transit_override[1])
         model.m['signal'].m['transit'].AIRS_u_slopes = [[0]*model_options.AIRS_transit_override[1]]
     for ii in range(2):
-        if not model_options.supersample_override[ii] is None:
+        if model_options.supersample_override[ii] is not None:
             model.m['signal'].m['transit'].transit_params[0][ii].supersample_factor = model_options.supersample_override[ii]
     model.m['signal'].m['transit'].common_parameters = model_options.common_parameters
 
@@ -415,7 +415,7 @@ class PredictionModel(kgs.Model):
 
     def _infer_single(self, test_data):
         
-        if not 'starting_par' in test_data.diagnostics.keys():
+        if 'starting_par' not in test_data.diagnostics.keys():
             test_data = self.starter_model.infer([test_data])[0]
         else:
             assert test_data.is_train
@@ -459,7 +459,7 @@ class PredictionModel(kgs.Model):
         sample_labels = sample_labels[inds,:]-pred_labels[inds,0][:,np.newaxis]
         cov = (sample_labels@sample_labels.T)/sample_labels.shape[1]
         
-        if not self.fixed_AIRS_sigma is None:
+        if self.fixed_AIRS_sigma is not None:
             cov[1:,1:] = self.fixed_AIRS_sigma**2
 
         # Sanity checks
@@ -533,7 +533,7 @@ class Observable(gp.Observable):
         def get_df(do_AIRS):
 
             # Get times and wavelengths into the proper column shape
-            times = data[do_AIRS].times/3600;
+            times = data[do_AIRS].times/3600
             times = np.tile(np.reshape(times,(-1,1)), (1,len(data[do_AIRS].wavelengths)))
             time_intervals = np.tile(np.reshape(data[do_AIRS].time_intervals,(-1,1)), (1,len(data[do_AIRS].wavelengths)))
             wavelengths = data[do_AIRS].wavelengths
@@ -699,8 +699,8 @@ class TransitModel(gp.Model):
                         cur_pos += 1
 
             # Update transit_params from x
-            self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None;
-            self.transit_params[i_instance][1].from_x(transit_x1);self.transit_params[i_instance][1].Rp = None;
+            self.transit_params[i_instance][0].from_x(transit_x0);self.transit_params[i_instance][0].Rp = None
+            self.transit_params[i_instance][1].from_x(transit_x1);self.transit_params[i_instance][1].Rp = None
             
             if self.fit_slopes:                
                 self.AIRS_u_slopes[i_instance] = list(to_what[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]), i_instance])
@@ -720,13 +720,13 @@ class TransitModel(gp.Model):
             n_params = max(n_params1, n_params2)
             for i_param in range(n_params):
                 if i_param in self.common_parameters:
-                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;
+                    x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1
                     assert(transit_x1[i_param]==transit_x0[i_param])
                 elif not i_param == self.Rp_parameter:
                     if i_param<n_params1:
-                        x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1;                        
+                        x[cur_pos,i_instance]=(transit_x0[i_param]);cur_pos+=1                        
                     if i_param<n_params2:
-                        x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1;
+                        x[cur_pos,i_instance]=(transit_x1[i_param]);cur_pos+=1
             if self.fit_slopes:
                 x[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]),i_instance] = self.AIRS_u_slopes[i_instance]
                 cur_pos+=len(self.AIRS_u_slopes[0])
@@ -835,7 +835,7 @@ class TransitModel(gp.Model):
             prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
                 prior_matrices.prior_precision_matrix , gp.sparse_matrix(np.linalg.inv(cov))
                 ], format=gp.sparse_matrix_str )
-            if not self.TS_slopes is None:
+            if self.TS_slopes is not None:
                 mu += self.TS_slopes * self.transit_params[0][0].Ts
                 assert self.transit_params[0][0].Ts == self.transit_params[0][1].Ts
             prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, mu])            
@@ -1085,7 +1085,7 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     plt.ylabel('Mean over time')
     plt.xlabel('Wavelength [um]')
     plt.legend(['Transit depth'])
-    if not data.diagnostics['training_spectrum'] is None:
+    if data.diagnostics['training_spectrum'] is not None:
         vals_corr = data.diagnostics['training_spectrum']
         plt.plot(kgs.wavelengths,vals_corr, color=[0.5,0.5,0.5])
         plt.legend(['Transit depth (sample from posterior)', 'Transit depth (mean of posterior)', 'Training labels (correct answer)'])

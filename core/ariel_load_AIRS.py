@@ -1,22 +1,14 @@
-import pandas as pd
 import numpy as np
-import scipy as sp
 import cupy as cp
-import copy
-from dataclasses import dataclass, field, fields
 import kaggle_support as kgs
-import pyarrow.parquet
-from astropy.stats import sigma_clip
-import matplotlib.pyplot as plt
 import ariel_numerics
-import ariel_load_FGS
 
 
 AIRS_C0 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C0_2.pickle')
 AIRS_C = kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0]
 AIRS_design_matrix = cp.concatenate([AIRS_C0.reshape(1,32,282), cp.array(AIRS_C[:2,:]).reshape(2,32,282)])
 AIRS_design_matrix_np = AIRS_design_matrix.get()
-del AIRS_C0; del AIRS_C;
+del AIRS_C0; del AIRS_C
 print(AIRS_design_matrix_np.shape)
 
 AIRS_C6 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C6.pickle')

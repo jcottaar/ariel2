@@ -1,13 +1,7 @@
 import numpy as np
-import cupy as cp
-import kaggle_support as kgs
-import scipy
 import copy
 import matplotlib.pyplot as plt
-import time
-from dataclasses import dataclass, field, fields
 from matplotlib import animation, rc; rc('animation', html='jshtml')
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.rcParams['animation.embed_limit'] = 1000
 matplotlib.rcParams['animation.html'] = 'jshtml'
@@ -29,12 +23,7 @@ def animate_3d_matrix(animation_arr, fps=20, figsize=(6,6), axis_off=False, titl
     plt.title(title)
     if axis_off:
         plt.axis('off')
-    #plt.title(f"{tomo_id}", fontweight="bold")
 
-    
-    #print('range: ', min_val,max_val)
-    #animation_arr = (animation_arr-min_val)/(max_val-min_val)
-    # Load next frame
     def animate_func(i):
         im.set_data(animation_arr[i])
         #plt.clim([0, 1])

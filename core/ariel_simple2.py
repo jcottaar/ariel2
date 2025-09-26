@@ -1,13 +1,11 @@
-import pandas as pd
 import numpy as np
 import scipy
 import cupy as cp
 import copy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 import kaggle_support as kgs
 import ariel_numerics
 import matplotlib.pyplot as plt
-import batman
 import ariel_transit
 
 @dataclass
@@ -85,7 +83,7 @@ class SimpleModel(kgs.Model):
                 self.poly_vals[ii][jj] = x[cur_ind]
                 cur_ind+=1
         if self.unlock_t0:
-            self.transit_param[1].t0 = self.transit_param[0].t0 + x[cur_ind];cur_ind+=1;
+            self.transit_param[1].t0 = self.transit_param[0].t0 + x[cur_ind];cur_ind+=1
         assert(cur_ind == len(x))
         if kgs.debugging_mode>=2:
             assert np.all( np.abs(np.array(self._to_x())-np.array(x))<=1e-10 )
@@ -341,7 +339,6 @@ class SimpleModelChainer(kgs.Model):
         
     def _infer_single(self,data):
         def try_one(data, early_stop):
-            import time
             with kgs.gpu_semaphores[kgs.my_gpu_id]:
                 #print(time.time(), kgs.process_name, 'started')   
                 data.transits[0].load_to_step(5, data, self.loaders)

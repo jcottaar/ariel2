@@ -1,12 +1,7 @@
-import pandas as pd
 import numpy as np
-import scipy
-import cupy as cp
 import copy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 import kaggle_support as kgs
-import ariel_numerics
-import matplotlib.pyplot as plt
 import batman
 import math
 
@@ -119,7 +114,7 @@ class TransitParams(kgs.BaseClass):
         params.a = self.sma
         params.inc = self.i
         params.ecc = self.e
-        if not self.force_inc is None: params.inc = self.force_inc
+        if self.force_inc is not None: params.inc = self.force_inc
         params.w = self.w   
         params.limb_dark = self.limb_dark
         params.u = self.u

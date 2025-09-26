@@ -1,9 +1,7 @@
-import pandas as pd
 import numpy as np
-import scipy as sp
 import cupy as cp
 import copy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 import kaggle_support as kgs
 import pyarrow.parquet
 from astropy.stats import sigma_clip

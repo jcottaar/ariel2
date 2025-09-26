@@ -2,7 +2,6 @@ import numpy as np
 import cupy as cp
 import kaggle_support as kgs
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
 def estimate_noise(ts, window_size=10, degree=2, combine_method='rms'):
     """
@@ -202,7 +201,6 @@ def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
         return result[0].item()
     return result
 
-import cupy as cp
 
 @kgs.profile_each_line
 def estimate_noise_cov_cp(ts, window_size=10, degree=2):
@@ -262,9 +260,7 @@ def estimate_noise_cov_cp(ts, window_size=10, degree=2):
     cov = (Rflat.T @ Rflat) / (L - 1)
     return cov
 
-import cupyx.scipy.sparse.linalg as cusparse
 
-import numpy as np
 
 @kgs.profile_each_line
 def nan_pca_rank1_memmap(
@@ -364,7 +360,6 @@ def nan_pca_rank1_memmap(
     S_post = np.array([np.linalg.norm(W_out)], dtype=dtype)
     return W_out, C_out, S_post
 
-import cupy as cp
 
 def lstsq_nanrows_normal_eq_with_pinv_sigma(
     dat,
@@ -424,5 +419,3 @@ def lstsq_nanrows_normal_eq_with_pinv_sigma(
 
     
 
-import cupy as cp
-from cupyx.scipy.linalg import solve_triangular

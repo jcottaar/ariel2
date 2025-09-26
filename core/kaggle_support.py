@@ -16,27 +16,17 @@ import pandas as pd
 import numpy as np
 import scipy as sp
 import dill # like pickle but more powerful
-import itertools
 import os
 import copy
-import json
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-import IPython
 from dataclasses import dataclass, field, fields
-import enum
 import typing
-import pathlib
 import multiprocess
 multiprocess.set_start_method('spawn', force=True)
 from decorator import decorator
 from line_profiler import LineProfiler
-import os
-import gc
 import glob
-import h5py
 import time
-import sklearn
 import shutil
 import torch
 import inspect
@@ -94,7 +84,7 @@ if not multiprocess.current_process().name == "MainProcess":
     print(process_name, multiprocess.current_process()._identity[0])  
     my_gpu_id = np.mod(multiprocess.current_process()._identity[0], n_cuda_devices)
     os.environ["CUDA_VISIBLE_DEVICES"] = str(my_gpu_id)
-    print('CUDA_VISIBLE_DEVICES=', os.environ["CUDA_VISIBLE_DEVICES"]);
+    print('CUDA_VISIBLE_DEVICES=', os.environ["CUDA_VISIBLE_DEVICES"])
 else:
     my_gpu_id = 0
 
@@ -160,7 +150,7 @@ class BaseClass:
             expected_type = type_hints.get(field_name)
             actual_value = getattr(self, field_name)
             
-            if expected_type and not isinstance(actual_value, expected_type) and not actual_value is None:
+            if expected_type and not isinstance(actual_value, expected_type) and actual_value is not None:
                 raise TypeError(
                     f"Field '{field_name}' expected type {expected_type}, "
                     f"but got value {actual_value} of type {type(actual_value).__name__}.")
@@ -177,14 +167,14 @@ class BaseClass:
 
 def dill_load(filename):
     # Small wrapper for dill loading
-    filehandler = open(filename, 'rb');
+    filehandler = open(filename, 'rb')
     data = dill.load(filehandler)
     filehandler.close()
     return data
 
 def dill_save(filename, data):
     # Small wrapper for dill saving
-    filehandler = open(filename, 'wb');
+    filehandler = open(filename, 'wb')
     data = dill.dump(data, filehandler)
     filehandler.close()
     return data
@@ -332,7 +322,7 @@ def sanity_check(f,to_check,name,code,limit,raise_error=True):
     # code: error code number to give
     # limit: 2-element array containing lower and upper limit
     if sanity_checks_active:
-        if not name in sanity_checks:
+        if name not in sanity_checks:
             sanity_checks[name] = SanityCheckValue(name,code,limit)
         value = float(to_cpu(f(to_check)))
         if not sanity_checks_without_errors and raise_error:
@@ -397,9 +387,9 @@ class Planet(BaseClass):
 
     
     def _check_constraints(self):
-        if not self.spectrum is None:
+        if self.spectrum is not None:
             assert self.spectrum.shape == wavelengths.shape
-        if not self.spectrum_cov is None:
+        if self.spectrum_cov is not None:
             assert self.spectrum_cov.shape == (wavelengths.shape[0], wavelengths.shape[0])
         assert len(self.transits)>=1
         for t in self.transits:
@@ -483,7 +473,7 @@ class Transit(BaseClass):
         caching = target_step in loaders[0].cache_steps
         if caching:
             # Are we already cached? In that case just load that.
-            cache_file_name = loader_cache_dir + '/' + hashlib.sha256(dill.dumps(loaders)).hexdigest()[:10] + '_' + str(planet.planet_id) + '_' + str(self.observation_number) + '_' + str(planet.is_train) + '_' + str(target_step) +'.pickle';
+            cache_file_name = loader_cache_dir + '/' + hashlib.sha256(dill.dumps(loaders)).hexdigest()[:10] + '_' + str(planet.planet_id) + '_' + str(self.observation_number) + '_' + str(planet.is_train) + '_' + str(target_step) +'.pickle'
             if os.path.isfile(cache_file_name):
                 (self.data, self.diagnostics) = dill_load(cache_file_name)
                 self.loading_step = target_step
@@ -705,7 +695,7 @@ class Model(BaseClass):
         # Check inputs and remove training labels to prevent peeking
         for t in test_data:
             if self.use_known_spectrum:
-                assert not t.spectrum is None
+                assert t.spectrum is not None
             else:
                 t.unload_spectrum()
             t.check_constraints()
@@ -740,7 +730,7 @@ class Model(BaseClass):
                             total=len(test_data),
                             desc="Processing in parallel", smoothing = 0.05
                             ))
-                except Exception as err:
+                except Exception:
                     print('Planet ID', dill_load(temp_dir+'error.pickle')[1])
                     raise
             # Import sanity checks

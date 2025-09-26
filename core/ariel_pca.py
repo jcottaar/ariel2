@@ -1,12 +1,7 @@
 import kaggle_support as kgs
 import ariel_gp
-from dataclasses import dataclass, field, fields
-import scipy
+from dataclasses import dataclass, field
 import numpy as np
-import cupy as cp
-import copy
-import time
-import matplotlib.pyplot as plt
 
 @dataclass
 class PCA(kgs.Model):    
