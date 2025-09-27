@@ -1,3 +1,11 @@
+'''
+This code is released under the CC BY 4.0 license, which allows you to use and alter this code (including commercially). You must, however, ensure to give appropriate credit to the original author (Jeroen Cottaar). For details, see https://creativecommons.org/licenses/by/4.0/
+
+The code below deals with jitter correction for AIRS.
+Unfortunately, I wasn't able to get this working properly. What I have here is better than naive binning, but not by much.
+I am sure it is possible to do much better.
+See my writeup for some indication of what I was going for.
+'''
 import numpy as np
 import cupy as cp
 import kaggle_support as kgs
@@ -9,35 +17,17 @@ AIRS_design_matrix = AIRS_C6.transpose( (2,0,1) )
 AIRS_design_matrix_np = AIRS_design_matrix.get()
 AIRS_weights6 = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_weights6.pickle'))
 
-class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
-    residual_threshold = np.inf
-    combine_rr2 = False
-    cutoff_sum=0
-    use_noise_est_naive = False
-    sequential_fit = False
-    handle_mean = True
-    #alpha=-0.5
-    
-    # Diagnostics
-    #residual = None
-    
+class ApplyWavelengthBinningAIRS3(kgs.BaseClass):   
     n_iter = 3
     
-    #@kgs.profile_each_line
     def __call__(self, data, planet, observation_number):
         assert not data.is_FGS
         
         dataa = data.data
         
         # Estimate noise
-        # result = cp.empty((dataa.shape[0], dataa.shape[2]))
-        # residual = cp.empty_like(dataa)
-        # residual_expected = cp.zeros((32,282))
-        # mean_vals = cp.zeros(282)
         noise_est_full = cp.zeros((32,282))
-        #noise_est_naive = cp.zeros((32,282))
         noise_est_naive = 0.4*cp.sqrt(64+cp.abs(cp.mean(dataa,0)))
-        # all_coeffs=[]
         
         for i_wavelength in range(282):
         
@@ -72,8 +62,6 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
             noise_est_full[:,i_wavelength] = noise_est
             
             residual_cov_ratio = residual_cov/cp.max(rhs)
-            #kgs.sanity_check(kgs.rms, residual_cov_ratio, 'residual_cov_rms', 1, [0,0.02])
-            #kgs.sanity_check(lambda x:np.max(np.abs(x)), residual_cov_ratio, 'residual_cov_max', 2, [0,0.2])
 
 
         n_batch = dataa.shape[0]
@@ -87,13 +75,11 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
         isnan = cp.isnan(rhs[0,:,0])           
         rhs[:,isnan,:] = 0
 
-        # --- CHANGED: use noise_est for prewhitening ---
         noise_est = noise_est_full.flatten()
         inv_noise = cp.zeros_like(noise_est)
         inv_noise[~isnan] = 1.0 / noise_est[~isnan]
         inv_noise[isnan] = 0
         rhs_w = rhs * inv_noise[None, :, None]
-        # ----------------------------------------------
 
         for ii in range(self.n_iter):
 
@@ -106,23 +92,19 @@ class ApplyWavelengthBinningAIRS3(kgs.BaseClass):
             sum_wi_ci = sum_wi_ci.reshape(n_batch, n_r, n_wavelength)
             rhs2 = rhs.reshape(n_batch, n_r, n_wavelength)
 
-            # --- CHANGED: weighted W0 ---
             w2 = inv_noise.reshape(n_r, n_wavelength)
             rhs2_w = rhs2 * w2[None, :, :]
             sum_wi_ci_w = sum_wi_ci * w2[None, :, :]
             W0 = cp.sum(rhs2_w * sum_wi_ci_w, 1) / cp.sum(sum_wi_ci_w * sum_wi_ci_w, 1)
-            # ----------------------------
 
             # Fit W
             design_matrix = W0[:,None,:,None]*C[None,:,:,:]
             design_matrix = design_matrix.reshape(n_batch, n_r*n_wavelength,n_comp)            
             design_matrix[:,isnan,:]=0
 
-            # --- CHANGED: prewhiten design and rhs for GLS ---
             design_matrix_w = design_matrix * inv_noise[None, :, None]
             AtA = cp.einsum('tmn,tmk->tnk', design_matrix_w, design_matrix_w)
             Atb = cp.einsum('tmn,tmk->tnk', design_matrix_w, rhs_w)
-            # -------------------------------------------------
 
             coeffs = cp.linalg.solve(AtA,Atb)
             assert not cp.any(cp.isnan(coeffs))

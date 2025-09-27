@@ -1,3 +1,9 @@
+'''
+This code is released under the CC BY 4.0 license, which allows you to use and alter this code (including commercially). You must, however, ensure to give appropriate credit to the original author (Jeroen Cottaar). For details, see https://creativecommons.org/licenses/by/4.0/
+
+This module implements data loading, from raw parquet files to wavelength-binned data.
+'''
+
 import numpy as np
 import cupy as cp
 import copy
@@ -10,18 +16,339 @@ import ariel_numerics
 import ariel_load_FGS
 import ariel_load_AIRS
 
-diagnostic_plots = False
+def default_loaders():
+    # Define the default loaders, based on the classes below.
+    loader = kgs.TransitLoader()
+    loader.load_raw_data = LoadRawData()
+    loader.apply_pixel_corrections = ApplyPixelCorrections()
+    loader.apply_full_sensor_corrections = ApplyFullSensorCorrections()
+    loader.apply_time_binning = ApplyTimeBinning()
+    loader.apply_wavelength_binning = ApplyWavelengthBinning()
+    
+    loaders = [loader, copy.deepcopy(loader)]
+    
+    # FGS configuration   
+    loaders[0].apply_full_sensor_corrections.inpainting_2d = True
+    loaders[0].apply_full_sensor_corrections.restore_invalids = True
+    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True    
+    loaders[0].apply_time_binning.time_binning = 50
+    loaders[0].apply_wavelength_binning = ariel_load_FGS.ApplyWavelengthBinningFGS2()
 
-#@kgs.profile_each_line
+    # AIRS configuration
+    loaders[1].apply_pixel_corrections.clip_columns=True
+    loaders[1].apply_pixel_corrections.clip_columns1=39
+    loaders[1].apply_pixel_corrections.clip_columns2=321    
+    loaders[1].apply_time_binning.time_binning = 5
+    loaders[1].apply_full_sensor_corrections.pca_options.n_components = 2
+    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows = True
+    loaders[1].apply_full_sensor_corrections.inpainting_wavelength = True
+    loaders[1].apply_full_sensor_corrections.restore_invalids = True
+    loaders[1].apply_wavelength_binning = ariel_load_AIRS.ApplyWavelengthBinningAIRS3()
+     
+    return loaders
+
+@dataclass
+class LoadRawData(kgs.BaseClass):  
+    # Loads raw parquet files
+    
+    def __call__(self, data, planet, observation_number):
+        filename = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_signal_' + str(observation_number) + '.parquet'
+        data.data = read_parquet_to_cupy(filename)
+        if data.is_FGS:
+            data.data = cp.reshape(data.data, (135000, 32, 32))
+        else:
+            data.data = cp.reshape(data.data, (11250, 32, 356))                  
+
+        # Times
+        data.times = cp.array(kgs.axis_info[kgs.sensor_names[not data.is_FGS]+'-axis0-h'].to_numpy())*3600
+        data.times = data.times[~cp.isnan(data.times)]
+        
+        # Integration times
+        if not data.is_FGS:
+            dt = cp.array(kgs.axis_info['AIRS-CH0-integration_time'].dropna().values)
+        else:
+            dt = cp.ones(data.data.shape[0])*0.1
+        dt[1::2] += 0.1
+        data.time_intervals = dt
+        
+        # Wavelength
+        if data.is_FGS:
+            data.wavelengths = cp.array([kgs.wavelengths[0]])
+        else:
+            data.wavelengths = cp.array(kgs.axis_info['AIRS-CH0-axis2-um'].dropna().to_numpy())
+
+@dataclass
+class ApplyPixelCorrections(kgs.BaseClass):
+    # Applies per-pixel corrections
+    
+    clip_columns = False # Clip columns of signal?
+    clip_columns1 = None
+    clip_columns2 = None
+    
+    clip_rows = False # Clip rows of signal?
+    clip_rows1 = None
+    clip_rows2 = None
+    
+    mask_dead = True # Remove dead pixels?
+    mask_hot = False # Remove hot pixels?
+    hot_sigma_clip = 5
+    linear_correction = True # Apply linear correction?
+    dark_current = True # Apply dark current correction?
+    flat_field = True # Apply flat field correction?
+    remove_cosmic_rays = True # Remove cosmic rays?
+    cosmic_ray_threshold = 20 # sigma threshold for removing cosmic rays?
+    remove_last_frame = True # Remove last frame from data? It is wrong if part of the transit
+    
+    adc_offset_sign = 1 # Change ADC offset sign?
+    dark_current_sign = 1 # Change dark current sign?
+
+    def __call__(self, data, planet, observation_number):
+        calibration_directory = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_calibration_' + str(observation_number) + '/'
+        
+        def clip_3d(signal):     
+            if self.clip_columns:
+                signal = signal[:, :, self.clip_columns1:self.clip_columns2]
+            if self.clip_rows:
+                signal = signal[:, self.clip_rows1:self.clip_rows1, :]   
+            return signal
+                
+        def clip_2d(signal):
+            if self.clip_columns:
+                signal = signal[:, self.clip_columns1:self.clip_columns2]
+            if self.clip_rows:
+                signal = signal[self.clip_rows1:self.clip_rows1, :] 
+            return signal
+        
+        def ADC_convert(signal, gain, offset):
+            signal /= gain
+            signal += self.adc_offset_sign * offset
+            kgs.sanity_check(lambda x:x, gain, 'gain', 1, [0.4, 0.5])                
+            kgs.sanity_check(lambda x:x, offset, 'offset', 2, [-1001, -999])
+            return signal
+
+        def mask_hot_dead(signal, dead, dark):
+            hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
+            if kgs.sanity_checks_active:
+                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.018])  # ~0.0166 probed in test set
+                kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.012]) # ~0.0107 probed in test set
+            if self.mask_hot:                
+                signal[:, hot] = cp.nan
+            if self.mask_dead:
+                signal[:, dead] = cp.nan
+            return signal
+
+        def apply_linear_corr(lc,x):        
+            result =  lc[0,:,:]+x*(lc[1,:,:]+x*(lc[2,:,:]+x*(lc[3,:,:]+x*(lc[4,:,:]+x*lc[5,:,:]))))
+            if kgs.sanity_checks_active:
+                kgs.sanity_check(cp.nanmax, cp.abs(result-x), 'linear_corr_impact', 9, [0, 50000])
+            return result
+
+        def clean_dark(signal, dark, dt):    
+            signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]            
+            if self.mask_dead:
+                if self.mask_hot:
+                    kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.01, 0.01]) 
+                    kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0.005, 0.02])        
+                else:
+                    kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-np.inf-0.05, 0.01]) 
+                    kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.]) 
+            return signal
+
+        def correct_flat_field(flat, signal):        
+            signal = signal / flat[cp.newaxis, :,:]
+            if self.mask_dead:
+                if self.mask_hot:
+                    kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.05]) # ~0.574 in test set
+                    kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.95, 1.2])  
+                else:
+                    kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
+                    kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2]) 
+            return signal
+        
+        def remove_cosmic_rays(signal):
+            # Remove comsic rays based on sigma filter
+            cosmic_ray_count = 0
+            for ii in range(signal.shape[1]):
+                signal_noise = ariel_numerics.remove_trend_cp(signal[:,ii,...]) # take only high frequent content
+                is_cosmic_ray = cp.abs(signal_noise - cp.mean(signal_noise,0))/cp.std(signal_noise,0) > self.cosmic_ray_threshold
+                signal[:,ii,...][is_cosmic_ray] = cp.nan
+                cosmic_ray_count += cp.sum(is_cosmic_ray)                  
+            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), cosmic_ray_count/np.prod(signal.shape), 'cosmic_ray_removal', 10, [0,5e-6])            
+            return signal
+            
+        
+        # Load calibration data
+        dark = clip_2d(read_parquet_to_cupy(calibration_directory+'dark.parquet'))
+        dead = clip_2d(read_parquet_to_cupy(calibration_directory+'dead.parquet'))
+        flat = clip_2d(read_parquet_to_cupy(calibration_directory+'flat.parquet'))
+        linear_corr = clip_3d(read_parquet_to_cupy(calibration_directory+'linear_corr.parquet').reshape(6,32,-1))        
+        if kgs.profiling: cp.cuda.Device().synchronize()
+        
+        # Clip to desired rows and columns, and make float64
+        data.data = clip_3d(data.data)
+        data.data = data.data.astype(cp.float64)        
+        if not data.is_FGS and self.clip_columns:
+            data.wavelengths = data.wavelengths[self.clip_columns1:self.clip_columns2]
+        
+        # ADC
+        offset = kgs.adc_info[kgs.sensor_names[not data.is_FGS]+'_adc_offset'].to_numpy()[0]
+        gain = kgs.adc_info[kgs.sensor_names[not data.is_FGS]+'_adc_gain'].to_numpy()[0]
+        data.data = ADC_convert(data.data,gain,offset)
+        
+        # Mask
+        data.data = mask_hot_dead(data.data,dead>0,dark)
+        
+        # Linear correction
+        if self.linear_correction:
+            data.data = apply_linear_corr(linear_corr, data.data)
+            
+        # Dark current
+        if self.dark_current:            
+            data.data = clean_dark(data.data,dark,data.time_intervals)            
+            
+        # Flat field
+        if self.flat_field:
+            data.data = correct_flat_field(flat, data.data)
+                 
+        # Correlated double sampling    
+        data.data = data.data[1::2,:,:]-data.data[0::2,:,:]
+        data.times = data.times[0::2]/2+data.times[1::2]/2   
+        data.time_intervals = data.time_intervals[1::2]
+        
+        # Remove cosmic rays
+        if self.remove_cosmic_rays:
+            data.data = remove_cosmic_rays(data.data)
+            inpaint_along_axis_inplace(data.data,0) # Fill cosmic ray datapoints with interpolation
+        
+        # Flip AIRS to have ascending wavelengths
+        if not data.is_FGS:
+            data.data = cp.flip(data.data, axis=2)
+            data.data = cp.ascontiguousarray(data.data)
+            data.wavelengths = cp.flip(data.wavelengths)
+            
+        # Remove last frame
+        if self.remove_last_frame:
+            data.data = data.data[:-1,...]
+            data.times = data.times[:-1]
+            data.time_intervals = data.time_intervals[:-1]            
+        
+
+@dataclass
+class ApplyFullSensorCorrections(kgs.BaseClass):
+    # Apply corrections that involve multiple pixels
+        
+    inpainting_wavelength = False # Apply 1D inpainting along wavelength axis
+    inpainting_2d = False # Apply 2D inpainting
+    restore_invalids = False # Make inpainted points invalid again (after applying background correction)
+    
+    # Settings for foreground correction
+    use_pca_for_background_removal = True
+    pca_options: object = field(init=True, default_factory = lambda:apply_pca_modelOptions(n_components=4))    
+    remove_background_based_on_rows = False # Remove background based on the top and bottom rows of the AIRS sensor
+    remove_background_n_rows = 8 
+    remove_background_remove_used_rows = False # Remove the background rows from the signal
+    
+    remove_background_based_on_pixels = False # Remoe background based on the darkest pixels of the FGS sensor
+    remove_background_pixels = 100
+    
+    def __call__(self, data, planet, observation_number):        
+        # Inpainting
+        was_invalid = cp.isnan(data.data[0,...]) # to restore later
+        if self.inpainting_wavelength:
+            inpaint_vectorized(data.data)
+        if self.inpainting_2d:     
+            temp = cp.transpose(copy.deepcopy(data.data), (0,2,1))
+            inpaint_vectorized(data.data)
+            inpaint_vectorized(temp)
+            data.data = (data.data+cp.transpose(temp, (0,2,1)))/2
+        
+        # Background correction, including attempt to correct jitter. Messy and not well documented, see writeup for (limited) description.
+        if self.use_pca_for_background_removal:
+            if data.is_FGS:
+                data_pca = cp.reshape(data.data, (-1,1024,1))
+                wavelength_ids = [0]
+            else:
+                data_pca = data.data
+                wavelength_ids = np.arange(1,283)
+            data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=2)[1]  
+            data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)                
+        else:
+            data_for_background_removal = data.data                
+        if not data.is_FGS:
+            background_data = cp.concatenate((data_for_background_removal[:,:self.remove_background_n_rows,:], data_for_background_removal[:,-self.remove_background_n_rows:,:]), axis=1)
+            background_estimate = cp.mean(background_data, axis=(0,1))
+            if self.remove_background_remove_used_rows:
+                to_keep = cp.full(data.data.shape[1], False)
+                to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
+                data.data = data.data[:,to_keep,:]
+            if self.remove_background_based_on_rows:
+                data.data -= background_estimate[None,None,:]            
+        if self.remove_background_based_on_pixels:
+            mean_per_pixel = cp.mean(data_for_background_removal, axis=0).flatten()
+            inds = cp.argsort(cp.mean(data.data,axis=0).flatten())
+            background_estimate = cp.mean(mean_per_pixel[inds[:self.remove_background_pixels]])
+            data.data -= background_estimate
+            
+        # Restore invalids
+        if self.restore_invalids:
+            data.data[:,was_invalid] = cp.nan
+            
+ 
+@dataclass
+class ApplyTimeBinning(kgs.BaseClass):
+    # Apply time binning
+    
+    add_last_frame = True # Include the last frame if the binning doesn't work out neatly?
+    time_binning = 3 # Size of bins
+    
+    def __call__(self, data, planet, observation_number):
+        data_new = bin_first_axis(data.data, self.time_binning)
+        times_new = bin_first_axis(data.times, self.time_binning)
+        time_intervals_new = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
+        # Add the last frame
+        if self.add_last_frame:
+            ind_done = data_new.shape[0]*self.time_binning
+            if ind_done < data.data.shape[0]:
+                data_new = cp.concatenate((data_new, cp.mean(data.data[ind_done:data.data.shape[0],...],0)[None,...]))
+                times_new = cp.concatenate((times_new, cp.mean(data.times[ind_done:data.data.shape[0]])[None]))
+                time_intervals_new =  cp.concatenate((time_intervals_new, (data.time_intervals[0]*(data.data.shape[0]-ind_done))[None]))
+        data.data = data_new
+        data.times = times_new
+        data.time_intervals = time_intervals_new
+                
+        
+        
+@dataclass        
+class ApplyWavelengthBinning(kgs.BaseClass):
+    # Apply simple wavelength binning. More advanced binning including jitter correction is used in submission (see below).
+    
+    def __call__(self, data, planet, observation_number):
+        if data.is_FGS:
+            data.data = cp.sum(data.data, axis=(1,2))
+            data.data = cp.reshape(data.data, (-1,1))
+        else:
+            data.data = cp.sum(data.data, axis=1)
+        data.data = cp.ascontiguousarray(data.data)
+        
+        # Estimate noise per pixel
+        data.noise_est = cp.empty((data.data.shape[1]))
+        for ii in range(data.data.shape[1]):
+            data.noise_est[ii] = ariel_numerics.estimate_noise_cp(data.data[:,ii])*np.sqrt(data.time_intervals[0])
+
+
+'''
+Support functions
+'''
 def read_parquet_to_numpy(filename):
+    # Faster way to read parquet
     table = pyarrow.parquet.read_table(filename)
     data = table.to_pandas().to_numpy()
     return data
-
 def read_parquet_to_cupy(filename):
     return cp.array(read_parquet_to_numpy(filename))
-
+   
 def inpaint_along_axis_inplace(arr, axis=0):
+    # Apply inpainting along a given axis (linear interpolation)
     arr = cp.asarray(arr)
     ndim = arr.ndim
     T = arr.shape[axis]
@@ -48,53 +375,7 @@ def inpaint_along_axis_inplace(arr, axis=0):
 
     # No need to move axes back — arr was modified in-place through views
     
-pca_data = kgs.dill_load(kgs.calibration_dir + '/explore_bad_pixels_pca.pickle')
-coeff_data = kgs.dill_load(kgs.calibration_dir+'/explore_base_shape_from_pca_coeff_list.pickle')
-core_shapes = []
-for i_wavelength in range(283):
-    core_shapes.append((cp.stack([c[0,:] for c in pca_data[1][i_wavelength]]).T @ coeff_data[i_wavelength][2][:,None])[:,0])
-    
 
-@dataclass
-class apply_pca_modelOptions(kgs.BaseClass):
-    n_components: int = field(init=True, default=0)
-    use_sum: bool = field(init=True, default=False)
-    
-    include_diagnostics: bool = field(init=True, default=False)
-
-def apply_pca_model(data, wavelength_ids, options, residual_mode = 0):
-    # 0: no residual
-    # 1: standard residual
-    # 2: remove only main shape
-    options.check_constraints()
-    
-    if residual_mode>0:
-        residual = copy.deepcopy(data)
-    else:
-        residual = None
-    weighted_coeffs = cp.empty((data.shape[0], data.shape[2]))
-    for i_data, i_wavelength in enumerate(wavelength_ids):
-        this_components = pca_data[1][i_wavelength][:options.n_components]
-        this_data = data[:,:,i_data]
-        noise_est = cp.sqrt(cp.abs(this_components[0]))[0,:]        
-        design_matrix = cp.stack([c[0,:] for c in this_components]).T                                                            
-        res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(this_data.T, design_matrix, sigma=noise_est, return_A_pinv_w=options.include_diagnostics)
-        coeffs = res[0].T      
-        if not options.use_sum:
-            weighted_coeffs[:,i_data] = coeffs @ coeff_data[i_wavelength][1][options.n_components-1]
-        else:
-            weighted_coeffs[:,i_data] = cp.sum((design_matrix@coeffs.T).T,1)
-        if residual_mode == 1:
-            residual[:,:,i_data] = (this_data.T-design_matrix@coeffs.T).T
-        elif residual_mode == 2:
-            residual[:,:,i_data] = this_data - weighted_coeffs[:,i_data][:,None] * core_shapes[i_wavelength]
-        
-        #print(coeffs.shape, this_data.shape, residual.shape)
-        
-    output = (weighted_coeffs, residual)
-    return output
-
-#@kgs.profile_each_line
 def inpaint_vectorized(data):
     """
     Inpaints NaN‐patches along the last axis (Y) of `data` (shape C×X×Y)
@@ -102,6 +383,7 @@ def inpaint_vectorized(data):
       • flat‐extrapolating any NaN runs at the left or right edge
       • linearly interpolating any interior NaN runs
     Loops only over X and over NaN‐segments (rare), otherwise fully GPU‐vectorized.
+    Basically vectorized version of inpaint_along_axis_inplace.
     """
     C, X, Y = data.shape
 
@@ -192,430 +474,51 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
     # reshape & average
     new_shape = (n_bins, bin_size) + trimmed.shape[1:]
     return trimmed.reshape(new_shape).mean(axis=1)
-
-
-@dataclass
-class LoadRawData(kgs.BaseClass):   
-    
-    #@kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):
-        filename = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_signal_' + str(observation_number) + '.parquet'
-        data.data = read_parquet_to_cupy(filename)
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        if data.is_FGS:
-            data.data = cp.reshape(data.data, (135000, 32, 32))
-        else:
-            data.data = cp.reshape(data.data, (11250, 32, 356))                  
-        if kgs.profiling: cp.cuda.Device().synchronize()
-
-        # Times
-        data.times = cp.array(kgs.axis_info[kgs.sensor_names[not data.is_FGS]+'-axis0-h'].to_numpy())*3600
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        data.times = data.times[~cp.isnan(data.times)]
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        
-        # Integration times
-        if not data.is_FGS:
-            dt = cp.array(kgs.axis_info['AIRS-CH0-integration_time'].dropna().values)
-        else:
-            dt = cp.ones(data.data.shape[0])*0.1
-        dt[1::2] += 0.1
-        data.time_intervals = dt
-        
-        # Wavelength
-        if data.is_FGS:
-            data.wavelengths = cp.array([kgs.wavelengths[0]])
-        else:
-            data.wavelengths = cp.array(kgs.axis_info['AIRS-CH0-axis2-um'].dropna().to_numpy())
-                
-        
-        if kgs.profiling: cp.cuda.Device().synchronize()
      
+'''
+The code below, as well as the code in ariel_load_AIRS.py and ariel_load_FGS.py, deals with jitter correction.
+Unfortunately, I wasn't able to get this working properly. What I have here is better than naive binning, but not by much.
+I am sure it is possible to do much better.
+See my writeup for some indication of what I was going for.
+'''
+        
+pca_data = kgs.dill_load(kgs.calibration_dir + '/explore_bad_pixels_pca.pickle')
+coeff_data = kgs.dill_load(kgs.calibration_dir+'/explore_base_shape_from_pca_coeff_list.pickle')
+core_shapes = []
+for i_wavelength in range(283):
+    core_shapes.append((cp.stack([c[0,:] for c in pca_data[1][i_wavelength]]).T @ coeff_data[i_wavelength][2][:,None])[:,0])
+    
 @dataclass
-class ApplyPixelCorrections(kgs.BaseClass):
-    
-    clip_columns = False
-    clip_columns1 = None
-    clip_columns2 = None
-    
-    clip_rows = False
-    clip_rows1 = None
-    clip_rows2 = None
-    
-    mask_dead = True
-    mask_hot = False
-    hot_sigma_clip = 5
-    linear_correction = True
-    dark_current = True
-    flat_field = True
-    remove_cosmic_rays = True
-    new_cosmic_ray_removal = True
-    cosmic_ray_threshold = 20
-    remove_last_frame = True
-    
-    adc_offset_sign = 1 
-    dark_current_sign = 1
-    
-    poke_holes = False
-    
-    #@kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):
-        calibration_directory = planet.get_directory() + kgs.sensor_names[not data.is_FGS] + '_calibration_' + str(observation_number) + '/'
-        
-        def clip_3d(signal):     
-            if self.clip_columns:
-                signal = signal[:, :, self.clip_columns1:self.clip_columns2]
-            if self.clip_rows:
-                signal = signal[:, self.clip_rows1:self.clip_rows1, :]   
-            return signal
-                
-        def clip_2d(signal):
-            if self.clip_columns:
-                signal = signal[:, self.clip_columns1:self.clip_columns2]
-            if self.clip_rows:
-                signal = signal[self.clip_rows1:self.clip_rows1, :] 
-            return signal
-        
-        def ADC_convert(signal, gain, offset):
-            signal /= gain
-            signal += self.adc_offset_sign * offset
-            kgs.sanity_check(lambda x:x, gain, 'gain', 1, [0.4, 0.5])                
-            kgs.sanity_check(lambda x:x, offset, 'offset', 2, [-1001, -999])
-            return signal
+class apply_pca_modelOptions(kgs.BaseClass):
+    n_components: int = field(init=True, default=0)
+    use_sum: bool = field(init=True, default=False)    
 
-        def mask_hot_dead(signal, dead, dark):
-            hot = cp.array(sigma_clip(dark.get(), sigma=self.hot_sigma_clip, maxiters=5).mask)
-            if kgs.sanity_checks_active:
-                kgs.sanity_check(lambda x:x, cp.mean(hot), 'ratio_hot', 3, [0, 0.018])  # ~0.0166 probed in test set
-                kgs.sanity_check(lambda x:x, cp.mean(dead), 'ratio_dead', 4, [0, 0.012]) # ~0.0107 probed in test set
-            if self.mask_hot:                
-                signal[:, hot] = cp.nan
-            else:
-                pass
-                #print('deal with extremely negative dark in test set first...also more sanity checks may fail')
-            if self.mask_dead:
-                signal[:, dead] = cp.nan
-            return signal
-
-        def apply_linear_corr(lc,x):        
-            result =  lc[0,:,:]+x*(lc[1,:,:]+x*(lc[2,:,:]+x*(lc[3,:,:]+x*(lc[4,:,:]+x*lc[5,:,:]))))
-            if kgs.sanity_checks_active:
-                kgs.sanity_check(cp.nanmax, cp.abs(result-x), 'linear_corr_impact', 9, [0, 50000])
-            return result
-
-        def clean_dark(signal, dark, dt):    
-            signal -= self.dark_current_sign * dark * dt[:, cp.newaxis, cp.newaxis]
-            # dark_plot = copy.deepcopy(dark)
-            # dark_plot[cp.isnan(signal[0,...])] = cp.nan
-            # plt.figure()
-            # plt.imshow(dark_plot.get(), aspect='auto', interpolation='none')
-            # plt.colorbar()
-            if self.mask_dead:
-                if self.mask_hot:
-                    kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-0.01, 0.01]) 
-                    kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0.005, 0.02])        
-                else:
-                    kgs.sanity_check(cp.min, dark[~cp.isnan(signal[0,:,:])], 'dark_min', 5, [-np.inf-0.05, 0.01]) 
-                    kgs.sanity_check(cp.max, dark[~cp.isnan(signal[0,:,:])], 'dark_max', 6, [0., 25.]) 
-            return signal
-
-        def correct_flat_field(flat, signal):        
-            signal = signal / flat[cp.newaxis, :,:]
-            if self.mask_dead:
-                if self.mask_hot:
-                    kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.05]) # ~0.574 in test set
-                    kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.95, 1.2])  
-                else:
-                    kgs.sanity_check(cp.min, flat[~cp.isnan(signal[0,:,:])], 'flat_min', 7, [0.5, 1.1])  # ~0.574 in test set
-                    kgs.sanity_check(cp.max, flat[~cp.isnan(signal[0,:,:])], 'flat_max', 8, [0.9, 1.2]) 
-            return signal
-        
-        def remove_cosmic_rays(signal):
-            #diff = np.abs(signal[1:,:,:] - signal[:-1,:,:])
-            #is_cosmic_ray = cp.empty_like(signal, dtype=bool)
-            #is_cosmic_ray[0,...] = diff[0,...]>self.cosmic_ray_threshold
-            #is_cosmic_ray[-1,...] = diff[-1,...]>self.cosmic_ray_threshold
-            #is_cosmic_ray[1:-1,...] = ( (diff[1:,...]>self.cosmic_ray_threshold) & (diff[:-1,...]>self.cosmic_ray_threshold))
-            if self.new_cosmic_ray_removal:
-                #is_cosmic_ray = cp.ones_like(signal,  dtype=cp.bool_)
-                cosmic_ray_count = 0
-                for ii in range(signal.shape[1]):
-                    signal_noise = ariel_numerics.remove_trend_cp(signal[:,ii,...])
-                    #plt.figure()
-                    #plt.plot(signal_noise.reshape(signal_noise.shape[0],-1).get())
-                    #plt.title(cp.std(signal_noise,0))
-                    #print(self.cosmic_ray_threshold)
-                    is_cosmic_ray = cp.abs(signal_noise - cp.mean(signal_noise,0))/cp.std(signal_noise,0) > self.cosmic_ray_threshold
-                    signal[:,ii,...][is_cosmic_ray] = cp.nan
-                    cosmic_ray_count += cp.sum(is_cosmic_ray)
-                #is_comsic_ray_alt = cp.abs(signal_noise - cp.mean(signal_noise,0))/cp.std(signal_noise,0) > self.cosmic_ray_threshold
-                #assert cp.all(is_cosmic_ray==is_comsic_ray_alt)
-            else:
-                is_cosmic_ray = cp.abs(signal - cp.mean(signal,0))/cp.std(signal,0) > self.cosmic_ray_threshold            
-            kgs.sanity_check(lambda x:cp.max(cp.mean(x)), cosmic_ray_count/np.prod(signal.shape), 'cosmic_ray_removal', 10, [0,5e-6])            
-            #print(cp.max(cp.mean(is_cosmic_ray)))
-            
-            return signal
-            
-        
-        # Load calibration data
-        dark = clip_2d(read_parquet_to_cupy(calibration_directory+'dark.parquet'))
-        dead = clip_2d(read_parquet_to_cupy(calibration_directory+'dead.parquet'))
-        flat = clip_2d(read_parquet_to_cupy(calibration_directory+'flat.parquet'))
-        linear_corr = clip_3d(read_parquet_to_cupy(calibration_directory+'linear_corr.parquet').reshape(6,32,-1))        
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        
-        # Clip to desired rows and columns, and make float64
-        data.data = clip_3d(data.data)
-        data.data = data.data.astype(cp.float64)        
-        if not data.is_FGS and self.clip_columns:
-            data.wavelengths = data.wavelengths[self.clip_columns1:self.clip_columns2]
-        if kgs.profiling: cp.cuda.Device().synchronize
-        
-        # ADC
-        offset = kgs.adc_info[kgs.sensor_names[not data.is_FGS]+'_adc_offset'].to_numpy()[0]
-        gain = kgs.adc_info[kgs.sensor_names[not data.is_FGS]+'_adc_gain'].to_numpy()[0]
-        data.data = ADC_convert(data.data,gain,offset)
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        
-        # Mask
-        data.data = mask_hot_dead(data.data,dead>0,dark)
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        
-        # Linear correction
-        if self.linear_correction:
-            data.data = apply_linear_corr(linear_corr, data.data)
-        if kgs.profiling: cp.cuda.Device().synchronize()
-            
-        # Dark current
-        if self.dark_current:            
-            data.data = clean_dark(data.data,dark,data.time_intervals)            
-        if kgs.profiling: cp.cuda.Device().synchronize()
-            
-        # Flat field
-        if self.flat_field:
-            data.data = correct_flat_field(flat, data.data)
-        if kgs.profiling: cp.cuda.Device().synchronize()     
-                 
-        # Correlated double sampling    
-        data.data = data.data[1::2,:,:]-data.data[0::2,:,:]
-        data.times = data.times[0::2]/2+data.times[1::2]/2   
-        data.time_intervals = data.time_intervals[1::2]
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        
-        # Remove cosmic rays
-        if self.remove_cosmic_rays:
-            data.data = remove_cosmic_rays(data.data)
-            inpaint_along_axis_inplace(data.data,0)
-        if kgs.profiling: cp.cuda.Device().synchronize()
-        
-        # Flip AIRS to have ascending wavelengths
-        if not data.is_FGS:
-            data.data = cp.flip(data.data, axis=2)
-            data.data = cp.ascontiguousarray(data.data)
-            data.wavelengths = cp.flip(data.wavelengths)
-            
-        if self.remove_last_frame:
-            data.data = data.data[:-1,...]
-            data.times = data.times[:-1]
-            data.time_intervals = data.time_intervals[:-1]
-            
-        if self.poke_holes:
-            if data.is_FGS:
-                data.data[:,15:16,15:16] = cp.nan
-            else:
-                data.data[:,15,::3] = cp.nan
-                data.data[:,16,1::3] = cp.nan
-
-@dataclass
-class ApplyFullSensorCorrections(kgs.BaseClass):
-        
-    inpainting_time = True
-    inpainting_wavelength = False
-    inpainting_2d = False
-    restore_invalids = False # after mean removal
+def apply_pca_model(data, wavelength_ids, options, residual_mode = 0):
+    # 0: no residual
+    # 1: standard residual
+    # 2: remove only main shape
+    options.check_constraints()
     
-    #remove_constant = 0.
-    
-    use_pca_for_background_removal = True
-    pca_options: object = field(init=True, default_factory = lambda:apply_pca_modelOptions(n_components=4))
-    
-    remove_background_based_on_rows = False
-    remove_background_n_rows = 8 
-    remove_background_remove_used_rows = False
-    
-    remove_background_based_on_pixels = False
-    remove_background_pixels = 100
-    
-    mean_removal_residual_mode = 2
-    
-    #@kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):        
-        assert self.inpainting_time # actually done above
-        was_invalid = cp.isnan(data.data[0,...])
-        if self.inpainting_wavelength:
-            inpaint_vectorized(data.data)
-        if self.inpainting_2d:     
-            temp = cp.transpose(copy.deepcopy(data.data), (0,2,1))
-            inpaint_vectorized(data.data)
-            inpaint_vectorized(temp)
-            data.data = (data.data+cp.transpose(temp, (0,2,1)))/2
-        
-        if self.use_pca_for_background_removal:
-            if data.is_FGS:
-                data_pca = cp.reshape(data.data, (-1,1024,1))
-                wavelength_ids = [0]
-            else:
-                data_pca = data.data
-                wavelength_ids = np.arange(1,283)
-            data_for_background_removal = apply_pca_model(data_pca, wavelength_ids, self.pca_options, residual_mode=self.mean_removal_residual_mode)[1]  
-            data_for_background_removal = cp.reshape(data_for_background_removal, data.data.shape)    
-            
+    if residual_mode>0:
+        residual = copy.deepcopy(data)
+    else:
+        residual = None
+    weighted_coeffs = cp.empty((data.shape[0], data.shape[2]))
+    for i_data, i_wavelength in enumerate(wavelength_ids):
+        this_components = pca_data[1][i_wavelength][:options.n_components]
+        this_data = data[:,:,i_data]
+        noise_est = cp.sqrt(cp.abs(this_components[0]))[0,:]        
+        design_matrix = cp.stack([c[0,:] for c in this_components]).T                                                            
+        res = ariel_numerics.lstsq_nanrows_normal_eq_with_pinv_sigma(this_data.T, design_matrix, sigma=noise_est, return_A_pinv_w=False)
+        coeffs = res[0].T      
+        if not options.use_sum:
+            weighted_coeffs[:,i_data] = coeffs @ coeff_data[i_wavelength][1][options.n_components-1]
         else:
-            data_for_background_removal = data.data
-                
-        if not data.is_FGS:
-            background_data = cp.concatenate((data_for_background_removal[:,:self.remove_background_n_rows,:], data_for_background_removal[:,-self.remove_background_n_rows:,:]), axis=1)
-            background_estimate = cp.mean(background_data, axis=(0,1))
-            if self.remove_background_remove_used_rows:
-                to_keep = cp.full(data.data.shape[1], False)
-                to_keep[self.remove_background_n_rows:-self.remove_background_n_rows] = True
-                data.data = data.data[:,to_keep,:]
-            if self.remove_background_based_on_rows:
-                data.data -= background_estimate[None,None,:]
-            
-        if self.remove_background_based_on_pixels:
-            mean_per_pixel = cp.mean(data_for_background_removal, axis=0).flatten()
-            #plt.figure();plt.semilogy(cp.sort(mean_per_pixel).get())
-            inds = cp.argsort(cp.mean(data.data,axis=0).flatten())
-            background_estimate = cp.mean(mean_per_pixel[inds[:self.remove_background_pixels]])
-            if diagnostic_plots:
-                print(background_estimate)
-            data.data -= background_estimate
-            
-        if self.restore_invalids:
-            data.data[:,was_invalid] = cp.nan
-            
- 
-@dataclass
-class ApplyTimeBinning(kgs.BaseClass):
-    
-    add_last_frame = True
-    time_binning = 3
-    
-    def __call__(self, data, planet, observation_number):
-        data_new = bin_first_axis(data.data, self.time_binning)
-        times_new = bin_first_axis(data.times, self.time_binning)
-        time_intervals_new = bin_first_axis(data.time_intervals, self.time_binning)*self.time_binning
-        # Add the last frame
-        if self.add_last_frame:
-            ind_done = data_new.shape[0]*self.time_binning
-            if ind_done < data.data.shape[0]:
-                data_new = cp.concatenate((data_new, cp.mean(data.data[ind_done:data.data.shape[0],...],0)[None,...]))
-                times_new = cp.concatenate((times_new, cp.mean(data.times[ind_done:data.data.shape[0]])[None]))
-                time_intervals_new =  cp.concatenate((time_intervals_new, (data.time_intervals[0]*(data.data.shape[0]-ind_done))[None]))
-        data.data = data_new
-        data.times = times_new
-        data.time_intervals = time_intervals_new
-                
+            weighted_coeffs[:,i_data] = cp.sum((design_matrix@coeffs.T).T,1)
+        if residual_mode == 1:
+            residual[:,:,i_data] = (this_data.T-design_matrix@coeffs.T).T
+        elif residual_mode == 2:
+            residual[:,:,i_data] = this_data - weighted_coeffs[:,i_data][:,None] * core_shapes[i_wavelength]
         
-        
-@dataclass        
-class ApplyWavelengthBinning(kgs.BaseClass):
-    
-    #@kgs.profile_each_line
-    def __call__(self, data, planet, observation_number):
-        if data.is_FGS:
-            data.data = cp.sum(data.data, axis=(1,2))
-            data.data = cp.reshape(data.data, (-1,1))
-        else:
-            data.data = cp.sum(data.data, axis=1)
-        data.data = cp.ascontiguousarray(data.data)
-        
-        # Estimate noise per pixel
-        data.noise_est = cp.empty((data.data.shape[1]))
-        for ii in range(data.data.shape[1]):
-            data.noise_est[ii] = ariel_numerics.estimate_noise_cp(data.data[:,ii])*np.sqrt(data.time_intervals[0])
-        #data.noise_est = ariel_numerics.estimate_noise_cp(data.data)*np.sqrt(data.time_intervals[0])
-    
-
-def default_loaders():
-    loader = kgs.TransitLoader()
-    loader.load_raw_data = LoadRawData()
-    loader.apply_pixel_corrections = ApplyPixelCorrections()
-    loader.apply_full_sensor_corrections = ApplyFullSensorCorrections()
-    loader.apply_time_binning = ApplyTimeBinning()
-    loader.apply_wavelength_binning = ApplyWavelengthBinning()
-    
-    loaders = [loader, copy.deepcopy(loader)]
-    
-    # FGS configuration   
-    loaders[0].apply_full_sensor_corrections.inpainting_2d = True
-    loaders[0].apply_full_sensor_corrections.restore_invalids = True
-    loaders[0].apply_full_sensor_corrections.remove_background_based_on_pixels = True    
-    loaders[0].apply_time_binning.time_binning = 50
-    loaders[0].apply_wavelength_binning = ariel_load_FGS.ApplyWavelengthBinningFGS2()
-
-    # AIRS configuration
-    loaders[1].apply_pixel_corrections.clip_columns=True
-    loaders[1].apply_pixel_corrections.clip_columns1=39
-    loaders[1].apply_pixel_corrections.clip_columns2=321    
-    loaders[1].apply_time_binning.time_binning = 5
-    loaders[1].apply_full_sensor_corrections.pca_options.n_components = 2
-    loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows = True
-    loaders[1].apply_full_sensor_corrections.inpainting_wavelength = True
-    loaders[1].apply_full_sensor_corrections.restore_invalids = True
-    loaders[1].apply_wavelength_binning = ariel_load_AIRS.ApplyWavelengthBinningAIRS3()
-     
-    return loaders
-
-
-def raw_data_diagnostics(data, observation_number, loaders):
-    
-    global diagnostic_plots
-    diagnostic_plots = True
-    ariel_load_FGS.diagnostic_plots = True
-    
-    transit = data.transits[observation_number]
-    
-    transit.load_to_step(0, data, loaders)
-    transit.load_to_step(2, data, loaders)
-    
-    plt.figure()
-    plt.imshow(cp.log(cp.mean(transit.data[0].data,0)).get())
-    plt.colorbar()
-    plt.title('FGS mean over time')
-    
-    plt.figure()
-    plt.imshow(cp.log(cp.mean(transit.data[1].data,0)).get(), aspect='auto', interpolation='none')
-    plt.colorbar()
-    plt.title('AIRS mean over time')
-    
-     
-    def plots_on_full_signal():
-        _,ax = plt.subplots(1,3,figsize=(24,8))
-        plt.sca(ax[0])
-        plt.plot(cp.nanmean(transit.data[0].data,(1,2)).get())
-        plt.sca(ax[1])
-        M=cp.mean(transit.data[1].data,1)
-        plt.imshow(M.get().T, aspect='auto', interpolation='none')
-        plt.sca(ax[2])
-        plt.imshow((M-np.mean(M,0)).get().T, aspect='auto', interpolation='none')
-    plots_on_full_signal()
-    
-    transit.load_to_step(3, data, loaders)
-    plots_on_full_signal()
-    
-    transit.load_to_step(4, data, loaders)
-    plots_on_full_signal()
-    
-    transit.load_to_step(5, data, loaders)
-    
-    transit.load_to_step(0, data, loaders)
-    
-    diagnostic_plots = False
-    ariel_load_FGS.diagnostic_plots = False
-    
-   
-        
-        
+    output = (weighted_coeffs, residual)
+    return output
