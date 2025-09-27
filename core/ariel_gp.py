@@ -160,7 +160,7 @@ def define_prior(obs, model_options, data):
     # Define the non-PCA part of the variation
     # AIRS part: predefined Gaussian Process kernel
     transit_depth_prior = kgs.dill_load(kgs.code_dir + '/transit_depth_new.pickle')
-    # The prior above was determined (messily) in 'explore_spectra.ipynb' in the master branch.
+    # The prior above was determined (messily) in 'explore_spectra.ipynb' in the main branch.
     model_AIRS = gp.ParameterScaler()
     model_AIRS.scaler = 1e-4
     model_AIRS.model = transit_depth_prior[0][1]
@@ -523,7 +523,7 @@ class TransitModel(gp.Model):
         self.AIRS_u_slopes = [[0,0]]
         self.cov_prior, self.mu_prior = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning28.pickle')
         # Note that the prior above cannot be used if the number or definition of parameters is changed, such as by setting fit_slopes to False.
-        # This prior was determind using expectation maximization. See "tune_transit_hyperparameters.ipynb" in the master branch for details.
+        # This prior was determind using expectation maximization. See "tune_transit_hyperparameters.ipynb" in the main branch for details.
     
     def _check_constraints(self):
         assert isinstance(self.depth_model, gp.Model)

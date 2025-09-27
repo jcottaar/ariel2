@@ -1,3 +1,10 @@
+'''
+This code is released under the CC BY 4.0 license, which allows you to use and alter this code (including commercially). You must, however, ensure to give appropriate credit to the original author (Jeroen Cottaar). For details, see https://creativecommons.org/licenses/by/4.0/
+
+This module defines transit parameters; it's mostly a wrapper for the batman package.
+Using pylightcurve-torch may be an improvement.
+'''
+
 import numpy as np
 import copy
 from dataclasses import dataclass, field
@@ -5,7 +12,6 @@ import kaggle_support as kgs
 import batman
 import math
 
-a_over_Rs = lambda Rs, Ms, P, Mp=0.0: (((6.67430e-11*((Ms*1.98847e30)+(Mp*5.9722e24))*(P*3600)**2)/(4*math.pi**2))**(1/3))/(Rs*6.957e8)
 
 @dataclass
 class TransitParams(kgs.BaseClass):
@@ -21,22 +27,13 @@ class TransitParams(kgs.BaseClass):
     t0:  float = field(init=True, default=None) # Transit midpoint in hours.
     sma: float = field(init=True, default=None) # Semi-major axis in stellar radii (Rs), showing the orbital distance relative to the stellar radii.
     i:   float = field(init=True, default=None) # Orbital inclination in degrees.
-    Rp_fudge:float = field(init=True, default=1.)
-    limb_dark: str = field(init=True, default = 'quadratic')
-    u: np.ndarray = field(init=True, default=None) # limb darkening
-    
-    beta_store = 0
-    
-    # Which parameters are free?
-    expose_e_and_w: bool =  field(init=True, default=False)
-    force_kepler: bool = field(init=True, default=False)
-    force_inc = None
-    expose_Rp_fudge: bool = field(init=True, default=False)
+    limb_dark: str = field(init=True, default = 'quadratic') # Limb darkening form
+    u: np.ndarray = field(init=True, default=None) # Limb darkening parameters
     
     # Modeling configuration
-    supersample_factor = 1
-    max_err = 1.
-    derivative_step_size = 1e-5
+    supersample_factor = 1 # passed to batman
+    max_err = 1. # passed to batman
+    derivative_step_size = 1e-5 # For finite differences
     
 
     def _K_hours(self):
@@ -45,37 +42,24 @@ class TransitParams(kgs.BaseClass):
                  (4 * math.pi**2)) ** (1/3)) / (self.Rs * 6.957e8)
 
     def to_x(self):
-        assert not self.expose_e_and_w  # as before
+        # Conver transit parameters to vector form
         K = self._K_hours()
-
         A = math.log(self.sma)      # sma is a/Rs (dimensionless)
         B = math.log(self.P)        # P in hours
-
         alpha = A - B                          # log((a/Rs)/P) -> controls duration/shape
         beta  = A - (2.0/3.0)*B - math.log(K)  # Kepler residual (singular dir)
-
-        if self.force_kepler:
-            beta = self.beta_store
         x = [self.t0, alpha, beta, self.i, self.Rp] + list(self.u)
-        if self.expose_Rp_fudge:
-            x.append(self.Rp_fudge)
         return x
 
     def from_x(self, x):
+        # Inverse of above
         x = list(x)
         self.t0 = x[0]
         alpha   = x[1]
         beta    = x[2]
-        if self.force_kepler:
-            beta = 0
-            self.beta_store = x[2]
         self.i  = x[3]
         self.Rp = x[4]
-        if self.expose_Rp_fudge:
-            self.u  = np.array(x[5:-1])
-            self.Rp_fudge = x[-1]
-        else:
-            self.u  = np.array(x[5:])
+        self.u  = np.array(x[5:])
 
         # Reconstruct P and sma from (alpha, beta)
         K = self._K_hours()
@@ -85,7 +69,6 @@ class TransitParams(kgs.BaseClass):
         # beta  = A - (2/3)B - ln K
         # => B = 3 * (ln K - (alpha - beta)),  A = alpha + B
         B = 3.0 * (math.log(K) - (alpha - beta))
-       # print(alpha,beta,B)
         A = alpha + B
 
         self.P   = math.exp(B)    # hours
@@ -105,16 +88,14 @@ class TransitParams(kgs.BaseClass):
             
     
     def light_curve(self,times):
-        if self.force_kepler:
-            self.from_x(self.to_x())
+        # Compute the light curve associated with the given parameters
         params = batman.TransitParams()
         params.t0 = self.t0
         params.per = self.P
-        params.rp = self.Rp * self.Rp_fudge
+        params.rp = self.Rp
         params.a = self.sma
         params.inc = self.i
         params.ecc = self.e
-        if self.force_inc is not None: params.inc = self.force_inc
         params.w = self.w   
         params.limb_dark = self.limb_dark
         params.u = self.u
@@ -126,11 +107,11 @@ class TransitParams(kgs.BaseClass):
         res = model.light_curve(params)  
         if self.Rp<0:
             res = 2-res
-        res = 1-self.Rp_fudge**-2 * (1-res)
         assert not np.any(np.isnan(res))
         return res
     
     def light_curve_derivatives(self,times,which):
+        # Compute derivatives of the light curve to the parameters, using finite differences
         base_curve = self.light_curve(times)
         res = []
         mod = copy.deepcopy(self)
