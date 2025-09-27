@@ -4,18 +4,9 @@ import kaggle_support as kgs
 import ariel_numerics
 
 
-AIRS_C0 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C0_2.pickle')
-AIRS_C = kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0]
-AIRS_design_matrix = cp.concatenate([AIRS_C0.reshape(1,32,282), cp.array(AIRS_C[:2,:]).reshape(2,32,282)])
-AIRS_design_matrix_np = AIRS_design_matrix.get()
-del AIRS_C0; del AIRS_C
-print(AIRS_design_matrix_np.shape)
-
 AIRS_C6 = kgs.dill_load(kgs.calibration_dir + 'AIRS_C6.pickle')
-print(AIRS_C6.shape)
 AIRS_design_matrix = AIRS_C6.transpose( (2,0,1) )
 AIRS_design_matrix_np = AIRS_design_matrix.get()
-print(AIRS_design_matrix_np.shape)
 AIRS_weights6 = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_weights6.pickle'))
 
 class ApplyWavelengthBinningAIRS3(kgs.BaseClass):

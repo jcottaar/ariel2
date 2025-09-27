@@ -193,11 +193,6 @@ def bin_first_axis(arr: cp.ndarray, bin_size: int) -> cp.ndarray:
     new_shape = (n_bins, bin_size) + trimmed.shape[1:]
     return trimmed.reshape(new_shape).mean(axis=1)
 
-#pca_data = kgs.dill_load(kgs.temp_dir + '/explore_bad_pixels_pca.pickle')[1]
-
-AIRS_jitter = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_jitter.pickle')[0][:2,:], dtype=cp.float64)
-AIRS_base_scaling = cp.array(kgs.dill_load(kgs.calibration_dir + 'AIRS_base_scaling.pickle'))
-
 
 @dataclass
 class LoadRawData(kgs.BaseClass):   

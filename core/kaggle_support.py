@@ -73,7 +73,7 @@ match env:
         loader_cache_dir = '/temp/loader_cache/'
         code_dir = '/kaggle/input/my-ariel-library-3/'         
         csv_dir = '/kaggle/working/'
-        calibration_dir = '/kaggle/input/my-ariel2-calibration/'
+        calibration_dir = '/kaggle/input/my-ariel-library-3/'
 os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
