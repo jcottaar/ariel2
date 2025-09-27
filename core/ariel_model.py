@@ -1,3 +1,9 @@
+'''
+This code is released under the CC BY 4.0 license, which allows you to use and alter this code (including commercially). You must, however, ensure to give appropriate credit to the original author (Jeroen Cottaar). For details, see https://creativecommons.org/licenses/by/4.0/
+
+This module implements some helpers for modeling, supporting the main modeling flow in ariel_gp.py
+'''
+
 import kaggle_support as kgs
 import ariel_gp
 import ariel_pca
@@ -8,11 +14,31 @@ import cupy as cp
 import copy
 import time
 
+def baseline_model():
+    # Defines the default model
+    
+    # 3 layers of helpers:
+    # - MultiTransit averages over multiple transits
+    # - Fudget applies several tweaks to the predictions, chosen to optimize the score on the training set
+    # - PCA handles PCA decomposition of the training lables    
+    model = MultiTransit(model=Fudger(model=ariel_pca.PCA(model=ariel_gp.PredictionModel())))
+    model.model.model.model_options_link = model.model.model.model.model_options # make sure PCA knows where to put its outputs
+    model.model.model.model.run_in_parallel = True # run the model in parallel to speed up
+    return model
 
 @dataclass
-class Fudger3(kgs.Model):
+class Fudger(kgs.Model):
+    # Applies several tweaks to the predictions of the underlying model
+    
+    model: kgs.Model = field(init=True, default=None) # The underlying model
+    
+    # Adapt mean of prediction for FGS and airs separately:
+    # output = bias_a + bias_b * input + adjust_based_on_u*u[0], where u[0] is the first limb darkening parameter
     bias_a: list = field(init=True, default_factory=lambda:[1.,1.]) # FGS, AIRS
     bias_b: list = field(init=True, default_factory=lambda:[0.,0.])    
+    adjust_based_on_u: list = field(init=True, default_factory=lambda:[0.,0.])
+    do_adjust_based_on_u = True
+    
     sigma_offset: list = field(init=True, default_factory=lambda:[0.,0.])
     sigma_fudge_FGS = 1.
     sigma_fudge_AIRS_mean = 1.
@@ -21,14 +47,13 @@ class Fudger3(kgs.Model):
     sigma_fudge_based_on_AIRS_var: list = field(init=True, default_factory=lambda:[0.,0.])
     fudge_based_on_AIRS_var = True
     
-    adjust_based_on_u: list = field(init=True, default_factory=lambda:[0.,0.])
-    do_adjust_based_on_u = True
+    
     
     sigma_fudge_multi = 1.
     do_fudge_multi = False
 
     
-    model: kgs.Model = field(init=True, default=None)
+    
     
     _cached_planet_id = None
     _cached_result = None
@@ -256,9 +281,3 @@ class SanityWrapper(kgs.Model):
     
 
 
-def baseline_model():
-    model = MultiTransit(model=Fudger3(model=ariel_pca.PCA(model=ariel_gp.PredictionModel())))
-    model.model.model.model_options_link = model.model.model.model.model_options
-    model.model.model.model.starter_model.train(kgs.load_all_train_data())
-    model.model.model.model.run_in_parallel = True
-    return model
