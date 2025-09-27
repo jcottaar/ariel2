@@ -14,7 +14,6 @@ import numpy as np
 import scipy as sp
 import pandas as pd
 import cupy as cp
-import cupyx.scipy.sparse
 import copy
 import kaggle_support as kgs # used for some support functions
 
@@ -34,10 +33,10 @@ from sksparse.cholmod import cholesky
 
 # Define sparse matrix class we use throughout
 sparse_matrix = sp.sparse.csc_matrix
-sparse_matrix_gpu = cupyx.scipy.sparse.csc_matrix
 sparse_matrix_str = 'csc'
 
 def check_matrix(A):
+    # Verify matrix satisfies all constraints for this module
     assert str(A.format) == sparse_matrix_str
     assert str(A.dtype) == 'float64'
     assert str(A.indptr.dtype) in ['int32','int64']
@@ -87,8 +86,6 @@ class PriorMatrices(kgs.BaseClass):
         assert isinstance(self.number_of_parameters, int)
         assert isinstance(self.prior_mean, np.ndarray)
         assert isinstance(self.observable_offset, np.ndarray)
-        #assert isinstance(self.prior_precision_matrix, sparse_matrix)
-        #assert isinstance(self.design_matrix, sparse_matrix)
         check_matrix(self.prior_precision_matrix)
         check_matrix(self.design_matrix)
         assert isinstance(self.noise_parameter_indices, np.ndarray)
@@ -219,9 +216,6 @@ class Model(kgs.BaseClass):
             assert np.all(np.abs(pred1.T - (prior_matrices.observable_offset + (prior_matrices.design_matrix@self.get_parameters_internal()).T)) <=1e-10*np.abs(pred1.T)+1e-10*self.expected_observation_scale)
             diff_actual = pred2-pred1
             diff_pred =  prior_matrices.design_matrix@offset   
-            #import ariel_gp
-            #if isinstance(self, ariel_gp.TransitModel):
-            #    print(kgs.rms(diff_actual - diff_pred), kgs.rms(diff_actual+diff_pred))
             assert np.all(np.abs(diff_actual - diff_pred)<=self.c1*np.abs(diff_actual+diff_pred)+self.c2*self.expected_observation_scale)
         
         return prior_matrices
@@ -812,6 +806,109 @@ class UncorrelatedVaryingSigma(Uncorrelated):
 
     def update_hyperparameters_from_mat_internal(self,mat):
         return False
+    
+class CustomKernel(FeatureSelector):
+    # Implements a very flexible Gaussian Process. Undocumented.
+    kernel_types = None
+    x_forms = None
+    hyperparameters = None
+
+    def _check_constraints(self):
+        # todo
+        super()._check_constraints()
+
+    def get_number_of_parameters_from_mat_internal(self, mat):
+        return mat.shape[0]
+
+    def get_observable_relationship_from_mat_internal(self,mat):
+        prior_matrices = PriorMatrices()
+        prior_matrices.number_of_observations = mat.shape[0]      
+        prior_matrices.observable_offset = np.zeros((mat.shape[0]))
+        prior_matrices.design_matrix = sparse_matrix (sp.sparse.eye(mat.shape[0]))
+        return prior_matrices
+    
+    def K_matrix(self, mat):
+        hyperparameters = self.hyperparameters
+        kernel_types = self.kernel_types
+        x_forms = self.x_forms
+        xx = mat
+        try: hyperparameters = hyperparameters.get()
+        except: pass
+        cur_ind = 0
+
+        # noise
+        K = hyperparameters[cur_ind]**2*cp.eye(xx.shape[0])
+        cur_ind+=1
+
+        for i_kernel in range(len(kernel_types)):        
+            if x_forms[i_kernel] == 'id':
+                this_x = xx
+            elif x_forms[i_kernel] == 'gamma':
+                this_x = xx**hyperparameters[cur_ind]
+                cur_ind+=1
+            elif x_forms[i_kernel] == 'log':
+                this_x = cp.log(xx)
+            else:
+                raise Exception('Wrong x_form')
+
+            sigma = hyperparameters[cur_ind]
+            cur_ind+=1
+
+            sigma_mat = sigma**2
+            
+            if kernel_types[i_kernel] == 'SE':     
+                ell = hyperparameters[cur_ind]
+                cur_ind+=1
+                K += sigma_mat * cp.exp(-(this_x - this_x.T)**2 / (2 * ell**2))
+            elif kernel_types[i_kernel] == 'SE_cosine':     
+                ell = hyperparameters[cur_ind]
+                p = hyperparameters[cur_ind+1]
+                cur_ind+=2
+                distances = (this_x - this_x.T)
+                K += sigma_mat * cp.exp(-distances**2 / (2 * ell**2)) * cp.cos(2*cp.pi*distances/ell*p)
+            elif kernel_types[i_kernel] == 'matern12':
+                ell = hyperparameters[cur_ind]
+                cur_ind+=1
+                K += sigma_mat * cp.exp(-cp.abs(this_x - this_x.T) / ell)
+            elif kernel_types[i_kernel] == 'matern32':
+                ell = hyperparameters[cur_ind]
+                cur_ind+=1
+                r = cp.abs(this_x - this_x.T) / ell
+                a = cp.sqrt(3.0) * r
+                K += sigma_mat * (1.0 + a) * cp.exp(-a)
+            elif kernel_types[i_kernel] == 'matern52':
+                ell = hyperparameters[cur_ind]
+                cur_ind+=1
+                r = cp.abs(this_x - this_x.T) / ell
+                a = cp.sqrt(5.0) * r
+                K += sigma_mat * (1.0 + a + (5.0 / 3.0) * r**2) * cp.exp(-a)
+            elif kernel_types[i_kernel] == 'old_fixed':
+                K = sigma_mat*cp.array(get_K_mm(mm, mm.sigmas, this_x.get()))
+            elif kernel_types[i_kernel] == 'old_dynamic':
+                mmm = copy.deepcopy(mm)
+                mmm.sigmas[:-1] = hyperparameters[cur_ind:cur_ind+9]
+                cur_ind+=9
+                K = cp.array(get_K_mm(mmm, mmm.sigmas, this_x.get()))
+            else:
+                raise Exception('Unknown kernel')
+
+        assert cur_ind == len(hyperparameters)
+        return K
+
+         
+    def get_prior_distribution_from_mat_internal(self,mat):
+        prior_matrices = PriorMatrices()
+        prior_matrices.number_of_parameters = mat.shape[0]
+        prior_matrices.prior_mean = np.zeros((mat.shape[0]))
+
+        K = self.K_matrix(cp.array(mat)).get()
+
+        prior_matrices.prior_precision_matrix =  sparse_matrix(sp.linalg.inv(K))
+        return prior_matrices
+
+    def get_prediction_from_mat_internal(self, mat):
+        return self.parameters
+
 
 
 
@@ -830,7 +927,7 @@ def robust_cholesky(Q, start_fallback=0):
     # Returns two outputs:
     # 1: Choleskey factor object from sksparse.cholmod.cholesky
     # 2: A diagonal scaling matrix
-    # See my_cholesky below for definitions
+    # See my_cholesky above for definitions
     try:
         assert start_fallback == 0
         diag_scaler = sparse_matrix(sp.sparse.eye(Q.shape[0]))
@@ -994,7 +1091,6 @@ def sample_from_prior(model, obs, rng=None, n_samples=0):
 
     return model
 
-#@kgs.profile_each_line
 def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True, clear_caches=False):   
     # Solves the GP assuming the model is linear.
     # Inputs:
@@ -1083,7 +1179,6 @@ def solve_gp(model, obs, rng=None, n_samples=0, fill_noise_parameters=True, clea
             assert np.all(np.abs(labels-obs.labels)<=1e-8*np.abs(labels))
         return model, model_samples, cholQ
 
-#@kgs.profile_each_line
 def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_iter = 25, update_rate = 0.1, update_hyperparameters_from=10, hyperparameter_method = 'em', max_log_update_initial=1., fill_noise_parameters=True, adapt_func = lambda x:x):
     # Solves a GP model iteratively, each time linearizing around the mean of the posterior of the previous step. Also updates hyperparameters along the way.
     
@@ -1093,7 +1188,6 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
         rng = np.random.default_rng(seed=0)
     state = copy.deepcopy(rng.bit_generator.state)
     for i in range(n_iter):
-        #print(model.m['signal'].m['main'].m['transit'].get_parameters()[-model.m['signal'].m['main'].m['transit'].number_of_extra_parameters:].T)
         rng.bit_generator.state = copy.deepcopy(state)   
         if i<update_hyperparameters_from:
             # Iteration with just parameter updates
@@ -1130,13 +1224,10 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
             prev_step = hparam_step
             hparam_new = np.exp(log_hparam_new) 
             model.set_hyperparameters(hparam_new)          
-            #print('Hyperparameters from ', hparam_old, ' to ',hparam_new)
-                
+                 
         # Parameter update
-        #print('before', log_likelihood_given_parameters(model)
         param_old = model.get_parameters()
         param_new = param_old + update_rate*(model_new.get_parameters()-param_old)
-        #print('after', log_likelihood_given_parameters(model)
         
         model.set_parameters(param_new)
         
@@ -1150,107 +1241,3 @@ def solve_gp_nonlinear(model, obs, rng=None, n_samples=0, n_samples_mle=10, n_it
     return a,b
 
 
-class CustomKernel(FeatureSelector):
-    kernel_types = None
-    x_forms = None
-    hyperparameters = None
-
-    def _check_constraints(self):
-        # todo
-        super()._check_constraints()
-
-    def get_number_of_parameters_from_mat_internal(self, mat):
-        return mat.shape[0]
-
-    def get_observable_relationship_from_mat_internal(self,mat):
-        prior_matrices = PriorMatrices()
-        prior_matrices.number_of_observations = mat.shape[0]      
-        prior_matrices.observable_offset = np.zeros((mat.shape[0]))
-        prior_matrices.design_matrix = sparse_matrix (sp.sparse.eye(mat.shape[0]))
-        return prior_matrices
-    
-    def K_matrix(self, mat):
-        hyperparameters = self.hyperparameters
-        kernel_types = self.kernel_types
-        x_forms = self.x_forms
-        xx = mat
-        #print(x.shape)
-        try: hyperparameters = hyperparameters.get()
-        except: pass
-        cur_ind = 0
-
-        # noise
-        K = hyperparameters[cur_ind]**2*cp.eye(xx.shape[0])
-        #K = 1e-6**2*cp.eye(x.shape[0])
-        cur_ind+=1
-
-        for i_kernel in range(len(kernel_types)):        
-            #xx = x[:,None]
-            if x_forms[i_kernel] == 'id':
-                this_x = xx
-            elif x_forms[i_kernel] == 'gamma':
-               # print('gamma', hyperparameters[cur_ind], cur_ind)
-                this_x = xx**hyperparameters[cur_ind]
-                cur_ind+=1
-            elif x_forms[i_kernel] == 'log':
-                this_x = cp.log(xx)
-            else:
-                raise 'stop'
-
-            sigma = hyperparameters[cur_ind]
-            cur_ind+=1
-
-            sigma_mat = sigma**2
-            
-            if kernel_types[i_kernel] == 'SE':     
-                ell = hyperparameters[cur_ind]
-                cur_ind+=1
-                K += sigma_mat * cp.exp(-(this_x - this_x.T)**2 / (2 * ell**2))
-            elif kernel_types[i_kernel] == 'SE_cosine':     
-                ell = hyperparameters[cur_ind]
-                p = hyperparameters[cur_ind+1]
-                cur_ind+=2
-                distances = (this_x - this_x.T)
-                K += sigma_mat * cp.exp(-distances**2 / (2 * ell**2)) * cp.cos(2*cp.pi*distances/ell*p)
-            elif kernel_types[i_kernel] == 'matern12':
-                ell = hyperparameters[cur_ind]
-                cur_ind+=1
-                K += sigma_mat * cp.exp(-cp.abs(this_x - this_x.T) / ell)
-            elif kernel_types[i_kernel] == 'matern32':
-                ell = hyperparameters[cur_ind]
-                cur_ind+=1
-                r = cp.abs(this_x - this_x.T) / ell
-                a = cp.sqrt(3.0) * r
-                K += sigma_mat * (1.0 + a) * cp.exp(-a)
-            elif kernel_types[i_kernel] == 'matern52':
-                ell = hyperparameters[cur_ind]
-                cur_ind+=1
-                r = cp.abs(this_x - this_x.T) / ell
-                a = cp.sqrt(5.0) * r
-                K += sigma_mat * (1.0 + a + (5.0 / 3.0) * r**2) * cp.exp(-a)
-            elif kernel_types[i_kernel] == 'old_fixed':
-                K = sigma_mat*cp.array(get_K_mm(mm, mm.sigmas, this_x.get()))
-            elif kernel_types[i_kernel] == 'old_dynamic':
-                mmm = copy.deepcopy(mm)
-                mmm.sigmas[:-1] = hyperparameters[cur_ind:cur_ind+9]
-                cur_ind+=9
-                K = cp.array(get_K_mm(mmm, mmm.sigmas, this_x.get()))
-            else:
-                raise['stop']
-
-        assert cur_ind == len(hyperparameters)
-        return K
-
-         
-    def get_prior_distribution_from_mat_internal(self,mat):
-        prior_matrices = PriorMatrices()
-        prior_matrices.number_of_parameters = mat.shape[0]
-        prior_matrices.prior_mean = np.zeros((mat.shape[0]))
-
-        K = self.K_matrix(cp.array(mat)).get()
-
-        prior_matrices.prior_precision_matrix =  sparse_matrix(sp.linalg.inv(K))
-        return prior_matrices
-
-    def get_prediction_from_mat_internal(self, mat):
-        return self.parameters
