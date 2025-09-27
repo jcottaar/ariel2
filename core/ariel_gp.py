@@ -915,18 +915,17 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
             result.append(func(this_labels))
         return wl_unique, np.array(result)
     
+    # Set up data
     obs_signal = copy.deepcopy(obs)
     obs_signal.labels = posterior_mean.m['signal'].get_prediction(obs)
     obs_noise = copy.deepcopy(obs)
     obs_noise.labels = obs.labels - obs_signal.labels
     noise_AIRS = obs_noise.export_matrix(True)
     noise_FGS = obs_noise.export_matrix(False)
-
     obs_signal_sample = copy.deepcopy(obs)
     obs_signal_sample.labels = posterior_samples.m['signal'].get_prediction(obs)
     obs_noise_sample = copy.deepcopy(obs)
     obs_noise_sample.labels = obs_noise_sample.labels - obs_signal_sample.labels[:,0:1]
-
     model_no_transit = copy.deepcopy(posterior_mean)
     assert(model_no_transit.m['signal'].model_names[2] == 'transit')
     model_no_transit.m['signal'].models[2] = gp.FixedValue()
@@ -935,13 +934,11 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     obs_no_transit = copy.deepcopy(obs)
     obs_no_transit.labels = model_no_transit.m['signal'].get_prediction(obs)
 
-    # Means over dimensions    
+    # Means of signal over time and wavelength    
     _,ax = plt.subplots(1,3,figsize=(18,6))
     for i in range(1):
         if i==0:
             plt.sca(ax[0])
-            # plt.plot(obs.wavelengths, np.mean(total, axis=0))
-            # plt.plot(obs.wavelengths, np.mean(signal, axis=0))
             wl_unique, result = apply_func_by_wavelength(np.mean, obs)
             plt.plot(wl_unique, result)
             plt.grid(True)
@@ -970,9 +967,8 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
                 plt.xlim([data.diagnostics['t_egress']/3600-0.4, data.diagnostics['t_egress']/3600+0.4])
 
     
-    # transit
-    _,ax = plt.subplots(1,1,figsize=(6,6))
-    plt.sca(ax[0])
+    # Transit depth
+    plt.figure()
     for i in range(5):
         wl_unique, result = model_to_mean_over_wavelengths(posterior_samples.m['signal'].m['transit'], instance=i)
         if i==0:
@@ -994,30 +990,12 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
             plt.title('RMS error = '+str(kgs.rms(vals_corr-vals_pred)))
         except:
             pass
-        
-    print(posterior_samples.m['signal'].m)
-    if 'background' in posterior_samples.m['signal'].m:
-        plt.sca(ax[1])
-        for i in range(5):
-            wl_unique, result = model_to_mean_over_wavelengths2(posterior_samples.m['signal'].m['background'], instance=i)
-            if i==0:
-                plt.plot(wl_unique, -result, color = 'blue', linewidth=0.5)
-            else:
-                plt.plot(wl_unique, -result, color = 'blue', linewidth=0.5, label='_nolegend_')
-        wl_unique, result = model_to_mean_over_wavelengths2(posterior_mean.m['signal'].m['background'])
-        plt.plot(wl_unique, -result, color='black')
-        vals_pred = -result
-        plt.grid(True)
-        plt.ylabel('Mean over time')
-        plt.xlabel('Wavelength [um]')
-        plt.legend(['Background (sample from posterior)', 'Background (mean of posterior)'])       
-
-        
+                
     if simple:
         plt.pause(0.001)
         return
 
-
+    # Transit parameters (except transit depth)
     _,ax = plt.subplots(1,2,figsize=(12,6))
     todo = np.concatenate([[0],np.arange(posterior_samples.m['signal'].m['transit'].depth_model.number_of_parameters, 
                                                                                                     posterior_samples.m['signal'].m['transit'].number_of_parameters)])
@@ -1025,77 +1003,42 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     plt.sca(ax[0])
     plt.imshow(cov)
     plt.colorbar()
-    plt.title('Transit paramater uncertainty covariance')
+    plt.title('Transit parameter uncertainty covariance')
     #cov = np.delete(np.delete(cov, 4, 0), 3, 1)
     corr = cov
     corr = corr/np.sqrt(np.diag(cov))/np.sqrt(np.diag(cov))[:,None]
     plt.sca(ax[1])
     plt.imshow(corr)
     plt.colorbar()
-    plt.title('Transit paramater uncertainty correlation')
+    plt.title('Transit parameter uncertainty correlation')
     
-    # plt.sca(ax[1])    
-    # plt.scatter(obs.df['time'], posterior_mean.m['signal'].m['transit'].m['transit_window'].get_prediction(obs))
-    # plt.grid(True)
-    # plt.ylabel('Mean over wavelengths')
-    # plt.xlabel('Time [h]')
-    # plt.legend(['Transit window'])
-
-    # drift
+    # Gain drift
     _,ax = plt.subplots(1,2,figsize=(12,6))
-    plt.sca(ax[0])
-    # obs_AIRS, obs_FGS =  posterior_mean.m['signal'].m['drift'].split_obs(obs)
-    # plt.scatter(obs_AIRS.df['time'], posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS))
-    # plt.scatter(obs_FGS.df['time'], posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS))
-    # plt.grid(True)
-    # plt.ylabel('Mean over wavelengths')
-    # plt.xlabel('Time [h]')
-    # plt.legend(['AIRS', 'FGS'])
-    # plt.title('Non-spectral drift')  
-    
+    plt.sca(ax[0])    
     obs_AIRS, obs_FGS = posterior_mean.m['signal'].m['drift'].split_obs(obs)
-
-    # Scatter plots (unchanged)
-    # sc_air = plt.scatter(
-    #     obs_AIRS.df['time'],
-    #     posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
-    # )
     sc_fgs = plt.scatter(
         obs_FGS.df['time'],
         posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS)
     )
-
-    # Formatting (unchanged)
     plt.grid(True)
     plt.ylabel('FGS drift')
     plt.xlabel('Time [h]')
     plt.title('FGS drift')
+    plt.sca(ax[1])
+    obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['spectral'].get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
+    plt.imshow(obs_AIRS.export_matrix(True), interpolation='none', aspect='auto')
+    plt.colorbar()
+    plt.title('Spectral drift (AIRS)')
 
-
-    if 'spectral' in posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m:
-        plt.sca(ax[1])
-        obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['spectral'].get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
-        plt.imshow(obs_AIRS.export_matrix(True), interpolation='none', aspect='auto')
-        plt.colorbar()
-        plt.title('Spectral drift (AIRS)')
-
+    # AIRS noise
     noise_prior_sample = gp.sample_from_prior(posterior_mean.m['noise'], obs, n_samples=1)
     obs_noise_prior_sample = copy.deepcopy(obs)
-    obs_noise_prior_sample.labels = noise_prior_sample.get_prediction(obs)
-    
-    #for ii in range(posterior_samples.number_of_instances):
-    #    print(posterior_samples.m['signal'].m['transit'].transit_params[ii][0].to_x())
-
+    obs_noise_prior_sample.labels = noise_prior_sample.get_prediction(obs)  
     obs_signal_sample = copy.deepcopy(obs)
     obs_signal_sample.labels = posterior_samples.m['signal'].get_prediction(obs)
     obs_signal_sample.labels = obs_signal_sample.labels[:,0:1]
     obs_noise = copy.deepcopy(obs)
     obs_noise.labels = obs.labels - obs_signal_sample.labels    
-    
-    #plt.pause(0.001)
-    #return
-    
-    #AIRS noise
     _,ax = plt.subplots(2,2,figsize=(18,18))
     noise_mat = obs_noise.export_matrix(True)
     cbl= []
@@ -1128,6 +1071,7 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
         if column == 1:
             plt.clim(cbl[1], cbu[1])
      
+    # FGS noise
     _,ax = plt.subplots(1,2,figsize=(12,6))
     plt.sca(ax[0])
     y1= obs_noise_prior_sample.export_matrix(False)
@@ -1148,6 +1092,7 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     plt.ylabel('FGS noise (low pass filtered)')
     plt.legend(['Prior sample', 'Posterior sample'])
 
+    # Some more noise diagnostics
     _,ax = plt.subplots(1,2,figsize=(12,6))
 
     plt.sca(ax[0])
