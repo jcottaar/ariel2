@@ -71,9 +71,9 @@ match env:
         data_dir = '/kaggle/input/ariel-data-challenge-2025/'
         temp_dir = '/temp/'           
         loader_cache_dir = '/temp/loader_cache/'
-        code_dir = '/kaggle/input/my-ariel-library-3/'         
+        code_dir = '/kaggle/input/my-ariel2025-library/'         
         csv_dir = '/kaggle/working/'
-        calibration_dir = '/kaggle/input/my-ariel-library-3/'
+        calibration_dir = '/kaggle/input/my-ariel2025-library/'
 os.makedirs(temp_dir, exist_ok=True)
 os.makedirs(loader_cache_dir, exist_ok=True)
 
