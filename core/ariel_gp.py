@@ -37,6 +37,7 @@ class ModelOptions(kgs.BaseClass):
     transit_pca_variances = None # Defines the variance for each component above to define the prior; set by ariel_pca.py
     FGS_transit_scaling = 1. # Scales the FGS non-PCA prior; set by ariel_pca.py
     AIRS_transit_scaling = 1. # Scales the AIRS non-PCA prior; set by ariel_pca.py
+    fit_u_slopes = True # Include linear dependence of limb darkening parameters on wavelength for AIRS
  
     # Configuration of the drift prior
     FGS_order = 3 # FGS polynomial order in time
@@ -213,6 +214,7 @@ def define_prior(obs, model_options, data):
     transit_model = TransitModel()
     transit_model.c1 = 1e20 # tweak numerical check on derivatives that is difficult to get working
     transit_model.c2 = 1e20 # tweak numerical check on derivatives that is difficult to get working
+    transit_model.fit_slopes = model_options.fit_u_slopes
     transit_model.depth_model = transit_depth_model # the transit depth model determined above
 
 

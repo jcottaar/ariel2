@@ -248,7 +248,7 @@ class ApplyFullSensorCorrections(kgs.BaseClass):
     remove_background_n_rows = 8 
     remove_background_remove_used_rows = False # Remove the background rows from the signal
     
-    remove_background_based_on_pixels = False # Remoe background based on the darkest pixels of the FGS sensor
+    remove_background_based_on_pixels = False # Remove background based on the darkest pixels of the FGS sensor
     remove_background_pixels = 100
     
     def __call__(self, data, planet, observation_number):        
