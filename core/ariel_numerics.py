@@ -1,3 +1,10 @@
+'''
+This code is released under the CC BY 4.0 license, which allows you to use and alter this code (including commercially). You must, however, ensure to give appropriate credit to the original author (Jeroen Cottaar). For details, see https://creativecommons.org/licenses/by/4.0/
+
+This module implements several numerical helper functions. Not all of these are used during submission.
+Significant chunks of this code were written by ChatGPT.
+'''
+
 import numpy as np
 import cupy as cp
 import kaggle_support as kgs
@@ -202,7 +209,6 @@ def estimate_noise_cp(ts, window_size=10, degree=2, combine_method='rms'):
     return result
 
 
-@kgs.profile_each_line
 def estimate_noise_cov_cp(ts, window_size=10, degree=2):
     """
     Estimate an NxN covariance matrix of 'noise' across columns of a 2D time series
@@ -262,7 +268,6 @@ def estimate_noise_cov_cp(ts, window_size=10, degree=2):
 
 
 
-@kgs.profile_each_line
 def nan_pca_rank1_memmap(
     X_row: np.memmap,      # shape (R, C), order='C'  (fast row batches)
     X_col: np.memmap,      # shape (R, C), order='F'  (fast column batches)
@@ -311,17 +316,9 @@ def nan_pca_rank1_memmap(
 
     prev_C = C_vec.copy()
     for it in range(1, max_iter + 1):
-        # plt.figure()
-        # plt.imshow(C_vec.reshape(32,32), interpolation='none', aspect='auto')
-        # plt.pause(0.001)
         C2 = (C_vec ** 2)
         for i0 in tqdm(range(0, R, row_batch)):
-            #print(i0)
             i1 = min(i0 + row_batch, R)
-            #num_i = np.zeros(i1 - i0, dtype=acc_dtype)
-            #den_i = np.zeros(i1 - i0, dtype=acc_dtype)
-            #for j0 in range(0, C, col_batch):
-            #j1 = min(j0 + col_batch, C)
             j0 = 0
             j1 = C
             block = X_row[i0:i1, j0:j1] - W_pre[i0:i1,:]@C_pre[:, j0:j1]
@@ -329,13 +326,9 @@ def nan_pca_rank1_memmap(
             num_i = _nan_to_num(block) @ C_vec[j0:j1]
             den_i = (mask * C2[j0:j1]).sum(axis=1, dtype=acc_dtype)#mask @ C2[j0:j1]
             W[i0:i1] = np.divide(num_i, den_i, out=np.zeros_like(num_i), where=den_i > 0)
-           # X_row._mmap.madvise(MADV_DONTNEED, start=i0*C*itemsize, length=(i1-i0)*C*itemsize)
 
         for j0 in tqdm(range(0, C, col_batch)):
             j1 = min(j0 + col_batch, C)
-            #num = np.zeros(j1 - j0, dtype=acc_dtype)
-            #den = np.zeros(j1 - j0, dtype=acc_dtype)
-            #for i0 in range(0, R, row_batch):
             i0 = 0
             i1 = R
             block = X_col[i0:i1, j0:j1] - W_pre[i0:i1,:]@C_pre[:, j0:j1]

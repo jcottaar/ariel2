@@ -160,6 +160,7 @@ def define_prior(obs, model_options, data):
     # Define the non-PCA part of the variation
     # AIRS part: predefined Gaussian Process kernel
     transit_depth_prior = kgs.dill_load(kgs.code_dir + '/transit_depth_new.pickle')
+    # The prior above was determined (messily) in 'explore_spectra.ipynb' in the master branch.
     model_AIRS = gp.ParameterScaler()
     model_AIRS.scaler = 1e-4
     model_AIRS.model = transit_depth_prior[0][1]
