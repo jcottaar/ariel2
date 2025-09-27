@@ -522,6 +522,7 @@ class TransitModel(gp.Model):
         self.AIRS_u_slopes = [[0,0]]
         self.cov_prior, self.mu_prior = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning28.pickle')
         # Note that the prior above cannot be used if the number or definition of parameters is changed, such as by setting fit_slopes to False.
+        # This prior was determind using expectation maximization. See "tune_transit_hyperparameters.ipynb" in the master branch for details.
     
     def _check_constraints(self):
         assert isinstance(self.depth_model, gp.Model)
@@ -913,9 +914,6 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
             this_labels = obs.labels[obs.df['wavelength'] == wl_unique[i], instance]
             result.append(func(this_labels))
         return wl_unique, np.array(result)
-
-    includes_FGS = np.any(np.logical_not(obs.df['is_AIRS']))
-    includes_AIRS = np.any(obs.df['is_AIRS'])
     
     obs_signal = copy.deepcopy(obs)
     obs_signal.labels = posterior_mean.m['signal'].get_prediction(obs)
@@ -953,13 +951,9 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     
         for do_AIRS in [False, True]:
             if do_AIRS:
-                if not includes_AIRS:
-                    continue
                 plt.sca(ax[1])
                 plt.title('AIRS')
             else:
-                if not includes_FGS:
-                    continue
                 plt.sca(ax[2])
                 plt.title('FGS')
             times = np.unique(obs.df['time'][obs.df['is_AIRS']==do_AIRS])
@@ -977,7 +971,7 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
 
     
     # transit
-    _,ax = plt.subplots(1,2,figsize=(12,6))
+    _,ax = plt.subplots(1,1,figsize=(6,6))
     plt.sca(ax[0])
     for i in range(5):
         wl_unique, result = model_to_mean_over_wavelengths(posterior_samples.m['signal'].m['transit'], instance=i)
@@ -1031,14 +1025,14 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     plt.sca(ax[0])
     plt.imshow(cov)
     plt.colorbar()
-    plt.title('Transit covariance')
+    plt.title('Transit paramater uncertainty covariance')
     #cov = np.delete(np.delete(cov, 4, 0), 3, 1)
     corr = cov
     corr = corr/np.sqrt(np.diag(cov))/np.sqrt(np.diag(cov))[:,None]
     plt.sca(ax[1])
     plt.imshow(corr)
     plt.colorbar()
-    plt.title('Transit correlation')
+    plt.title('Transit paramater uncertainty correlation')
     
     # plt.sca(ax[1])    
     # plt.scatter(obs.df['time'], posterior_mean.m['signal'].m['transit'].m['transit_window'].get_prediction(obs))
@@ -1062,74 +1056,25 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     obs_AIRS, obs_FGS = posterior_mean.m['signal'].m['drift'].split_obs(obs)
 
     # Scatter plots (unchanged)
-    sc_air = plt.scatter(
-        obs_AIRS.df['time'],
-        posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
-    )
+    # sc_air = plt.scatter(
+    #     obs_AIRS.df['time'],
+    #     posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
+    # )
     sc_fgs = plt.scatter(
         obs_FGS.df['time'],
         posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS)
     )
 
-    # --- Add 3rd-order polynomial fits over points (excluded from legend) ---
-    def _flatten_numeric(a):
-        a = np.asarray(a)
-        if a.ndim > 1:
-            a = np.squeeze(a)
-        return a.ravel().astype(float, copy=False)
-
-    def _scatter_color(sc):
-        # Try facecolor first, then edgecolor; if none, return None to let Matplotlib choose
-        fc = sc.get_facecolors()
-        if fc is not None and len(fc) > 0:
-            return fc[0]
-        ec = sc.get_edgecolors()
-        if ec is not None and len(ec) > 0:
-            return ec[0]
-        return None
-
-    def _fit_and_plot(x, y, sc):
-        x = _flatten_numeric(x)
-        y = _flatten_numeric(y)
-        m = np.isfinite(x) & np.isfinite(y)
-        x, y = x[m], y[m]
-        if x.size < 2:
-            return  # not enough data
-        # Use cubic if possible; otherwise fall back to the max allowed degree
-        deg = min(3, np.unique(x).size - 1)
-        if deg < 1:
-            return
-        p = np.poly1d(np.polyfit(x, y, deg))
-        xs = np.linspace(x.min(), x.max(), max(50, len(x)))
-        plt.plot(
-            xs, p(xs),
-            label="_nolegend_",
-            zorder=sc.get_zorder() + 1,
-            color='black'
-        )
-
-    # AIRS fit
-    xA = obs_AIRS.df['time']
-    yA = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
-    _fit_and_plot(xA, yA, sc_air)
-
-    # FGS fit
-    xF = obs_FGS.df['time']
-    yF = posterior_mean.m['signal'].m['drift'].m['FGS'].model.m['average'].get_prediction(obs_FGS)
-    _fit_and_plot(xF, yF, sc_fgs)
-    # --- end fits ---
-
     # Formatting (unchanged)
     plt.grid(True)
-    plt.ylabel('Mean over wavelengths')
+    plt.ylabel('FGS drift')
     plt.xlabel('Time [h]')
-    plt.legend(['AIRS', 'FGS'])
-    plt.title('Non-spectral drift')
+    plt.title('FGS drift')
 
 
     if 'spectral' in posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m:
         plt.sca(ax[1])
-        obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.drift_model_AIRS_inner.get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
+        obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['spectral'].get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
         plt.imshow(obs_AIRS.export_matrix(True), interpolation='none', aspect='auto')
         plt.colorbar()
         plt.title('Spectral drift (AIRS)')
@@ -1191,13 +1136,17 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     plt.plot(obs_FGS.df['time'], y2)    
     plt.xlabel('Time [h]')
     plt.ylabel('FGS noise')
-    plt.legend(['Prior', 'Posterior'])
+    plt.legend(['Prior sample', 'Posterior sample'])
+    plt.grid(True)
     plt.sca(ax[1])
     y1 -= ariel_numerics.remove_trend_cp(cp.array(y1), window_size=300, degree=4).get()
     y2 -= ariel_numerics.remove_trend_cp(cp.array(y2), window_size=300, degree=4).get()
     plt.plot(obs_FGS.df['time'], y1)
     plt.plot(obs_FGS.df['time'], y2)    
     plt.grid(True)
+    plt.xlabel('Time [h]')
+    plt.ylabel('FGS noise (low pass filtered)')
+    plt.legend(['Prior sample', 'Posterior sample'])
 
     _,ax = plt.subplots(1,2,figsize=(12,6))
 
@@ -1205,7 +1154,7 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
     wl_unique, result = apply_func_by_wavelength(np.sum, obs_noise)
     plt.scatter(wl_unique, result)
     plt.xlabel('Wavelength [um]')
-    plt.ylabel('Sum of noise term')
+    plt.ylabel('Sum of noise term (posterior sample)')
     obs_temp = copy.deepcopy(obs_noise)
     obs_temp.labels = 1/np.reshape(posterior_mean.m['noise'].get_prior_matrices(obs_temp).prior_precision_matrix.diagonal(), (-1,1)) # covariance
     wl_unique, result = apply_func_by_wavelength(lambda x:np.sqrt(np.sum(x)), obs_temp)
