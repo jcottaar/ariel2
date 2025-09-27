@@ -145,7 +145,7 @@ class Fudger3(kgs.Model):
 class MultiTransit(kgs.Model):
     
     model: kgs.Model = field(init=True, default=None)
-    variance_fudge = 1.
+    variance_fudge = 1.4
     
     def _convert_data(self, data):
         data_run = []
@@ -162,7 +162,7 @@ class MultiTransit(kgs.Model):
         return data_run
         
     def _train(self,train_data):
-        self.model.train(self._convert_data(train_data))
+        self.model.train(train_data)
         self.state=1
         
     
@@ -257,8 +257,8 @@ class SanityWrapper(kgs.Model):
 
 
 def baseline_model():
-    model = Fudger3(model=ariel_pca.PCA(model=ariel_gp.PredictionModel()))
-    model.model.model_options_link = model.model.model.model_options
-    model.model.model.starter_model.train(kgs.load_all_train_data())
-    model.model.model.run_in_parallel = True
+    model = MultiTransit(model=Fudger3(model=ariel_pca.PCA(model=ariel_gp.PredictionModel())))
+    model.model.model.model_options_link = model.model.model.model.model_options
+    model.model.model.model.starter_model.train(kgs.load_all_train_data())
+    model.model.model.model.run_in_parallel = True
     return model

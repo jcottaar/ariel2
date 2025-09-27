@@ -41,8 +41,8 @@ def run_model_test(regenerate_reference=False):
     #models['simple'] = ariel_simple.SimpleModel()    
     #models['simple'].run_in_parallel = not regenerate_reference
     models['baseline'] = ariel_model.baseline_model()
-    models['baseline'].model.n_components = 1
-    models['baseline'].model.model.run_in_parallel = not regenerate_reference
+    models['baseline'].model.model.n_components = 1
+    models['baseline'].model.model.model.run_in_parallel = not regenerate_reference
     train_data = kgs.load_all_train_data()
     for name,model in models.items():
         data = copy.deepcopy(train_data[38:41])

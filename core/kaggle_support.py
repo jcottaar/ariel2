@@ -40,6 +40,7 @@ Determine environment and globals
 '''
 
 # Where are we running?
+is_submission = False
 if os.path.isdir('/mnt/d/ariel2/'):
     env = 'local'
     d_drive = '/mnt/d/'    
@@ -48,9 +49,13 @@ elif os.path.isdir('d:/'):
     d_drive = 'd:/'   
 else:
     env = 'kaggle'
+    if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
+        is_submission = True
 
 profiling = False # If true, enabling line-by-line profiling for functions decorated with @profile_each_line
 debugging_mode = 1 # Can be set to 0, 1, or 2 to configure the detail of inline checks.
+if is_submission:
+    debugging_mode = 0 # speed up during submission
 disable_any_parallel = False # If true, will not use multiple processes
 
 # Find our data locations
@@ -740,9 +745,9 @@ class Model(BaseClass):
                         sanity_check(lambda x:x, s, v.name, v.code, v.limit, raise_error=False)
             
         else:
-            # Infere one-by-one
+            # Infer one-by-one
             result = []
-            for d in tqdm(test_data, desc="Inferring", disable = len(test_data)<=1, smoothing = 0.05):     
+            for d in tqdm(test_data, desc="Inferring", disable = len(test_data)<=2, smoothing = 0.05):     
                 data=copy.deepcopy(d)
                 orig_step = data.transits[0].loading_step
                 from threadpoolctl import threadpool_limits
