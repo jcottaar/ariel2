@@ -44,7 +44,7 @@ class ModelOptions(kgs.BaseClass):
     AIRS_order_wavelength = 3 # AIRS polynomial order in wavelength
 
     # Configuration of the solver
-    n_samples_sigma_est = 100 # how many samples to take to estimate the covariance matrix (and hence the sigma prediction)
+    n_samples_sigma_est = 200 # how many samples to take to estimate the covariance matrix (and hence the sigma prediction)
     n_iter = 4 # number of iterations for the non-linear solver
     update_rate = 1 # update rate for the non-linear solver; reduce in case of instability
     max_log_update_hyperparameters = 1 # maximum update of log(hyperparameters) in each iteration

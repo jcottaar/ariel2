@@ -157,7 +157,7 @@ class MultiTransit(kgs.Model):
     # Models multiple transits and averages them
     
     model: kgs.Model = field(init=True, default=None) # underlying model
-    variance_fudge = 1.4 # Fudge to apply to variance (error often correlates between transits)
+    variance_fudge = 1.2 # Fudge to apply to variance (error often correlates between transits)
     
     def _convert_data(self, data):
         # Make one list of all the transits to pass to the underlying model
