@@ -29,59 +29,37 @@ Model definition
 class ModelOptions(kgs.BaseClass):
     # Configures define_prior and fit_gp
 
-    use_training_labels = False # if True we make use of the ground truth; useful when we want to investigate the other prior elements or for visualization
-
     # Configuration of the transit depth prior
     update_transit_variation_sigma = True # whether to update the magnitude of the transit depth variation; this effectively makes the fit less aggressive if the transit depth seems flat
-    update_transit_pca_sigma = False 
-    update_transit_nonpca_sigma = False 
     min_transit_scaling_factor = 0.2 # minimum value for the magnitude scaling above; necessary because maximum likelihood estimation tends to underestimate small values
-    FGS_AIRS_decoupling = 1
-    use_old_transit_depth_prior = False
-    transit_depth_alpha = 1. # 1 = tuned based on raw, 0 = tuned based on PCA rescaled
-    new_transit_depth_FGS_sigma_override = 0.0001
-    transit_pca_components = None
-    transit_pca_variances = None
-    FGS_transit_scaling = 1.
-    AIRS_transit_scaling = 1.
+    new_transit_depth_FGS_sigma_override = 0.0001 # override for the standard deviation of the FGS transit depth (relative to the mean of the transit depth); a messy bit of code I wasn't able to purge
+    transit_pca_components = None # Defines the PCA components of the transit depths; set by ariel_pca.py
+    transit_pca_variances = None # Defines the variance for each component above to define the prior; set by ariel_pca.py
+    FGS_transit_scaling = 1. # Scales the FGS non-PCA prior; set by ariel_pca.py
+    AIRS_transit_scaling = 1. # Scales the AIRS non-PCA prior; set by ariel_pca.py
  
     # Configuration of the drift prior
-    hfactor = 1 # determines the resolution of the KISS-GP grid for the 2D drift (spectral drift); higher hfactor means faster calculation and lower accuracy
-    FGS_order = 3 # -1 for GP
-    AIRS_order_time = 3 # -1 for GP
-    AIRS_order_wavelength = 3
-    
-    include_background = False
+    FGS_order = 3 # FGS polynomial order in time
+    AIRS_order_time = 3 # AIRS polynomial order in time
+    AIRS_order_wavelength = 3 # AIRS polynomial order in wavelength
 
     # Configuration of the solver
     n_samples_sigma_est = 100 # how many samples to take to estimate the covariance matrix (and hence the sigma prediction)
     n_iter = 4 # number of iterations for the non-linear solver
-    update_rate = 1 # update rate 
+    update_rate = 1 # update rate for the non-linear solver; reduce in case of instability
     max_log_update_hyperparameters = 1 # maximum update of log(hyperparameters) in each iteration
     
     # Diagnostics
-    make_noise_consistent = False
-    FGS_noise_scaling = 1
-    AIRS_noise_scaling = 1
-    
-    # temp
-    FGS_transit_override = None
-    AIRS_transit_override = None
-    supersample_override = [None,None]
-    transit_std_scaling = 1.
-    unregularize_transit = False
-    common_parameters = None
-    output_model = False
-    modify_func = None
-    modify_func_input = None
-    remove_ingress_egress = False
+    make_noise_consistent = False # whether to compute the residual of the model; this is slow and not necessary during submission
+    output_model = False # whether to store the fitted model afterwards; takes quite some memory and not necessary during submission
+    modify_func = None # (set in constructor) function applied to model after initialization; used for testing variations
+    modify_func_input = None # second input passed to function above (first is the model itself)
+    use_training_labels = False # if True we make use of the ground truth; useful when we want to investigate the other prior elements or for visualization
     
     def __post_init__(self):
         super().__post_init__()
-        self.common_parameters = [1,2,3]
         self.modify_func = lambda x,y:x
         
-
 
 def define_prior(obs, model_options, data):
     # This is the core function that defines the prior for the Bayesian Inference.
@@ -92,8 +70,6 @@ def define_prior(obs, model_options, data):
     # data: the data as returned by kgs.DataLoader
     #
     # Returns an initialized model as defined in gp.py, as well as un unitialized copy (used for some special flows)
-    #
-    # For an overview, see https://www.kaggle.com/competitions/ariel-data-challenge-2024/discussion/543853
     
     # Overall model: (star_spectrum * drift * transit) + noise
     # We now define each of these one by one, then combine them
@@ -109,58 +85,51 @@ def define_prior(obs, model_options, data):
     
     ### Drift - we define the model separately for AIRS and for FGS, then combine them at the end
     
-    ## AIRS drift: average (depends only on time) and spectral (depends on time and wavelength); we'll define them in 'm' and then create the final class at the end
-    m = dict()
-    m['average'] = gp.FixedValue()
-    m['spectral'] = gp.FixedBasis()
-    m['spectral'].features = ['time', 'wavelength']
-    m['spectral'].regularization_variance = np.array([1e4]*(model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
+    ## AIRS drift: polynomial in time and wavelength; actually this may be the product of two 1D polynomials, but this is not implemented
+    drift_model_AIRS_inner = gp.FixedBasis()
+    drift_model_AIRS_inner.features = ['time', 'wavelength']
+    drift_model_AIRS_inner.regularization_variance = np.array([1e4]*(model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1))) # 'infinite'
+    # Define the polynomials
     t = obs.df['time'].to_numpy()
     t = t[obs.df['is_AIRS']]
     times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
-    t = obs.df['wavelength'].to_numpy()
-    t = t[obs.df['is_AIRS']]
-    wavelength_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
-    m['spectral'].basis_functions = np.zeros((len(times_norm), model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
+    w = obs.df['wavelength'].to_numpy()
+    w = w[obs.df['is_AIRS']]
+    wavelength_norm = 2*(w - w.min())/(w.max() - w.min()) - 1
+    drift_model_AIRS_inner.basis_functions = np.zeros((len(times_norm), model_options.AIRS_order_time*(model_options.AIRS_order_wavelength+1)))
     for i_order in range(1,model_options.AIRS_order_time+1):
         for j_order in range(model_options.AIRS_order_wavelength+1):
             poly_vals1 = np.zeros(model_options.AIRS_order_time+1)
             poly_vals1[i_order] = 1
             poly_vals2 = np.zeros(model_options.AIRS_order_wavelength+1)
             poly_vals2[j_order] = 1
-            m['spectral'].basis_functions[:,j_order*model_options.AIRS_order_time + i_order - 1] = np.polynomial.chebyshev.chebval(times_norm, poly_vals1)*np.polynomial.chebyshev.chebval(wavelength_norm, poly_vals2)
-    # plt.figure()
-    # plt.imshow(m['spectral'].basis_functions, aspect='auto', interpolation='none')
-    # plt.pause(0.001)
-    # Combine average and spectral drift
+            drift_model_AIRS_inner.basis_functions[:,j_order*model_options.AIRS_order_time + i_order - 1] = np.polynomial.chebyshev.chebval(times_norm, poly_vals1)*np.polynomial.chebyshev.chebval(wavelength_norm, poly_vals2)
+    # Add some helpers on top
     drift_model_AIRS = gp.ParameterScaler()
     drift_model_AIRS.scaler = 1e-3 # Typical parameter scale, helps with numerics
-    drift_model_AIRS.model = gp.CompoundNamed() # This class combines multiple models
-    drift_model_AIRS.model.m = m # Insert the models defined above
+    drift_model_AIRS.model = gp.CompoundNamed()
+    drift_model_AIRS.model.m = {'spectral': drift_model_AIRS_inner} # Insert the model defined above
     drift_model_AIRS.model.offset = 1. # Add 1 (drift is 1+average+spectral)
-    drift_model_AIRS.model.mode = 'sum' # Indicates that we add (rather than multiply) the models
 
-    ## FGS drift: average only, otherwise similar to above
-    # Define average FGS drift - 1D Gaussian Processs over time
-    m = dict()
-    m['average'] = gp.FixedBasis()
-    m['average'].features = ['time']
-    m['average'].regularization_variance = np.array([1e4]*model_options.FGS_order)
+    ## FGS drift: polynomial in time
+    drift_model_FGS_inner = gp.FixedBasis()
+    drift_model_FGS_inner.features = ['time']
+    drift_model_FGS_inner.regularization_variance = np.array([1e4]*model_options.FGS_order) # 'infinite'
+    # Define the polynomials
     t = obs.df['time'].to_numpy()
     t = t[~obs.df['is_AIRS']]
     times_norm = 2*(t - t.min())/(t.max() - t.min()) - 1
-    m['average'].basis_functions = np.zeros((len(times_norm), model_options.FGS_order))
+    drift_model_FGS_inner.basis_functions = np.zeros((len(times_norm), model_options.FGS_order))
     for i_order in range(model_options.FGS_order):
         poly_vals = np.zeros(model_options.FGS_order+1)
         poly_vals[i_order+1] = 1
-        m['average'].basis_functions[:,i_order] = np.polynomial.chebyshev.chebval(times_norm, poly_vals)
-    # Combine; not really needed since it's just 1 model, but we do it for consistency with AIRS model
+        drift_model_FGS_inner.basis_functions[:,i_order] = np.polynomial.chebyshev.chebval(times_norm, poly_vals)
+    # Add some helpers on top
     drift_model_FGS = gp.ParameterScaler()
     drift_model_FGS.scaler = 1e-3
     drift_model_FGS.model = gp.CompoundNamed()
-    drift_model_FGS.model.m = m
-    drift_model_FGS.model.offset = 1.
-    drift_model_FGS.model.mode = 'sum'
+    drift_model_FGS.model.m = {'average': drift_model_FGS_inner} # Insert the model defined above
+    drift_model_FGS.model.offset = 1. # Add 1 (drift is 1+average+spectral)
 
     ## Create the final drift model by combining the AIRS and FGS models above
     drift_model = ModelSplitSensors() # This class handles the splitting of AIRS and FGS, applying the AIRS model to AIRS data and FGS model to FGS data
@@ -171,7 +140,7 @@ def define_prior(obs, model_options, data):
     
     
     
-    ### Transit - This is the product of the transit depth and the transit window. We'll define those separately and then combine them.
+    ### Transit - We first define a prior for the transit depths, and then insert this into a model that handles the full transit.
 
     ## Transit depth model. This one's structure is a bit nested:
     ## - Average: offset
@@ -179,7 +148,7 @@ def define_prior(obs, model_options, data):
     ##    - Non PCA part, split between FGS and AIRS as...
     ##       - FGS: offset (regularized)
     ##       - AIRS: 1D Gaussian Process over wavelength
-    ##    - PCA part, consisting of fixed basis functions (the PCA shapes determind earlier)
+    ##    - PCA part, consisting of fixed basis functions (determined in ariel_pca.py)
     # Define average model
     m = dict() # this is where we will combine all the transit depth components
     m['average'] = gp.ParameterScaler()
@@ -189,24 +158,28 @@ def define_prior(obs, model_options, data):
     m['average'].model.sigma = 0.01 # kind of infinite
     
     # Define the non-PCA part of the variation
+    # AIRS part: predefined Gaussian Process kernel
     transit_depth_prior = kgs.dill_load(kgs.code_dir + '/transit_depth_new.pickle')
     model_AIRS = gp.ParameterScaler()
     model_AIRS.scaler = 1e-4
     model_AIRS.model = transit_depth_prior[0][1]
-    model_AIRS.model.hyperparameters = model_options.transit_depth_alpha * transit_depth_prior[0][1].hyperparameters + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][1].hyperparameters
     model_AIRS.model.features = ['wavelength']
+    # FGS part: just a single-parameter Gaussian
     model_FGS = gp.ParameterScaler()
     model_FGS.scaler = 1e-4
     model_FGS.model = gp.Uncorrelated()
-    model_FGS.model.features = ['wavelength']
-    model_FGS.model.sigma = (model_options.transit_depth_alpha * transit_depth_prior[0][0] + (1-model_options.transit_depth_alpha) * transit_depth_prior[1][0]).item()
-    if model_options.new_transit_depth_FGS_sigma_override is not None:
-        model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
-    model_FGS.model.sigma *= model_options.FGS_AIRS_decoupling
-
+    model_FGS.model.features = []
+    model_FGS.model.sigma = model_options.new_transit_depth_FGS_sigma_override
+    # Apply an overall scaling, determined in ariel_pca.py
     model_FGS.scaling_factor *= model_options.FGS_transit_scaling
     model_AIRS.scaling_factor *= model_options.AIRS_transit_scaling
+    model_variation_non_pca = ModelSplitSensors()
+    mm = dict()
+    mm['FGS'] = model_FGS
+    mm['AIRS'] = model_AIRS
+    model_variation_non_pca.m = mm    
     
+    # PCA part of the variation
     if model_options.transit_pca_components is not None:
         model_variation_pca = gp.ParameterScaler()
         model_variation_pca.scaler = 1e-4
@@ -214,14 +187,9 @@ def define_prior(obs, model_options, data):
         model_variation_pca.model.basis_functions = model_options.transit_pca_components.T
         model_variation_pca.model.regularization_variance = model_options.transit_pca_variances
         model_variation_pca.model.features = ['wavelength']     
-        model_variation_pca.update_scaling = model_options.update_transit_pca_sigma
    
-    model_variation_non_pca = ModelSplitSensors()
-    mm = dict()
-    mm['FGS'] = model_FGS
-    mm['AIRS'] = model_AIRS
-    model_variation_non_pca.m = mm    
-    # Create the variation model
+    
+    # Create the variation model by combining the PCA and non-PCA components
     m['variation'] = gp.CompoundNamed()
     mm = dict()
     mm['non_pca'] = model_variation_non_pca
@@ -229,26 +197,22 @@ def define_prior(obs, model_options, data):
         mm['pca'] = model_variation_pca
     m['variation'].m=mm
     m['variation'].update_scaling = model_options.update_transit_variation_sigma # Determine if we tune the magnitude of the variation, essentially scaling all sigma values within
-    m['variation'].m['non_pca'].update_scaling = model_options.update_transit_nonpca_sigma 
     
     # Create the final transit depth model
     transit_depth_model = gp.CompoundNamed()
-    transit_depth_model.m = m
+    transit_depth_model.m = m # contains 'average' (from several lines up) and 'variation'
     # And undo all our work above if we're using the training labels - in that case the prior is just a fixed value (delta distribution)
     if model_options.use_training_labels:
         # Use fixed transit depth
         transit_depth_model = gp.FixedValue()
-        transit_depth_model.offset = -data.diagnostics['training_spectrum']#np.nan*obs.df['time'].to_numpy()
-        #for i in range(len(data.diagnostics['training_spectrum'])):
-        #    transit_depth_model.offset[np.isclose(obs.df['wavelength'], kgs.wavelengths[i])] = -data.diagnostics['training_spectrum'][i]
+        transit_depth_model.offset = -data.diagnostics['training_spectrum']
         assert(not np.any(np.isnan(transit_depth_model.offset)))
 
-    ## Combine the models above to create the full transit model
+    ## Create the full transit model; see TransitModel class below for details
     transit_model = TransitModel()
-    transit_model.c1 = 1e20 # tweak numerical check
-    transit_model.c2 = 1e20 # tweak numerical check
-    transit_model.std_values = [model_options.transit_std_scaling*x for x in transit_model.std_values]
-    transit_model.depth_model = transit_depth_model
+    transit_model.c1 = 1e20 # tweak numerical check on derivatives that is difficult to get working
+    transit_model.c2 = 1e20 # tweak numerical check on derivatives that is difficult to get working
+    transit_model.depth_model = transit_depth_model # the transit depth model determined above
 
 
     ### Noise model - uncorrelated Gaussian per point, with sigma values from preprocessing
@@ -259,11 +223,12 @@ def define_prior(obs, model_options, data):
     noise_model.model.features_hyper = 1 # indicates that hyperparameters (i.e. noise magnitudes) depend on wavelength
     noise_model.model.check_for_uniqueness = False # speeds things up
     noise_model.model.use_as_noise_matrix = True # indicates that this behaves as noise (solver needs this information)
-    noise_model.model.sigma_varying = np.concatenate((data.transits[0].data[0].noise_est.get()*model_options.FGS_noise_scaling, data.transits[0].data[1].noise_est.get()*model_options.AIRS_noise_scaling)) # set sigma values
+    # Set sigma values based on preprocessing noise estimates
+    noise_model.model.sigma_varying = np.concatenate((data.transits[0].data[0].noise_est.get(), data.transits[0].data[1].noise_est.get())) 
 
     
     ### Combine everything
-    # Multiple star spectrum, drift, and transit
+    # Combine star spectrum, drift, and transit
     m = dict()
     m['spectrum'] = stellar_spectrum_model
     m['drift'] = drift_model
@@ -272,20 +237,7 @@ def define_prior(obs, model_options, data):
     signal_model.m=m
     signal_model.mode = 'product'
     signal_model.expected_observation_scale = 1e5 # for debugging, doesn't normally matter
-    
-    # # Combine to main
-    # m = dict()
-    # m['main'] = signal_model
-    # if model_options.include_background:
-    #     background_model = gp.Uncorrelated()
-    #     background_model.features = ['wavelength']
-    #     background_model.sigma = 1e20
-    #     m['background'] = background_model
-    # signal_model2 = gp.CompoundNamed()
-    # signal_model2.m=m
-    # signal_model2.mode = 'sum'
-    # signal_model2.expected_observation_scale = 1e5 # for debugging, doesn't normally matter
-    
+        
     # Add noise to the above
     m = dict()
     m['signal'] = signal_model
@@ -294,22 +246,11 @@ def define_prior(obs, model_options, data):
     model.m=m
     model.expected_observation_scale = 1e5 # for debugging, doesn't normally matter
     
-    # Transit window: use the ingress and egress times estimates during preprocessing 
+    # Insert transit parameters from starter model
     model.m['signal'].m['transit'].transit_params = [data.diagnostics['transit_params']]
     model.m['signal'].m['transit'].transit_params[0][0].t0 = model.m['signal'].m['transit'].transit_params[0][1].t0
-    if model_options.FGS_transit_override is not None:
-        model.m['signal'].m['transit'].transit_params[0][0].limb_dark = model_options.FGS_transit_override[0]
-        model.m['signal'].m['transit'].transit_params[0][0].u = 0.1*np.ones(model_options.FGS_transit_override[1])
-    if model_options.AIRS_transit_override is not None:
-        model.m['signal'].m['transit'].transit_params[0][1].limb_dark = model_options.AIRS_transit_override[0]
-        model.m['signal'].m['transit'].transit_params[0][1].u = 0.1*np.ones(model_options.AIRS_transit_override[1])
-        model.m['signal'].m['transit'].AIRS_u_slopes = [[0]*model_options.AIRS_transit_override[1]]
-    for ii in range(2):
-        if model_options.supersample_override[ii] is not None:
-            model.m['signal'].m['transit'].transit_params[0][ii].supersample_factor = model_options.supersample_override[ii]
-    model.m['signal'].m['transit'].common_parameters = model_options.common_parameters
 
-    model.force_cache_observation_relationship = True
+    model.force_cache_observation_relationship = True # add some caching for speed
     model_uninitialized = copy.deepcopy(model)
     model.initialize(obs) # inform the models about the observable, so they can for example figure out how many parameters they have and initialize them to zero
 
@@ -317,7 +258,7 @@ def define_prior(obs, model_options, data):
     # Star spectrum: use the average of the signal per wavelength
     model.m['signal'].m['spectrum'].model.parameters = \
         np.concatenate(( np.reshape(cp.mean(data.transits[0].data[0].data, axis=0).get(), (-1,1)), np.reshape(cp.mean(data.transits[0].data[1].data, axis=0).get(), (-1,1)) ))
-     # Transit depth: get initial values from simple model
+     # Transit depth: get initial value for average from starter model
     if not model_options.use_training_labels:
         model.m['signal'].m['transit'].depth_model.m['average'].model.parameters = -np.reshape(np.mean(data.spectrum), (1,1))
 
@@ -352,9 +293,10 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
     if stop_before_solve:
         # For external analysis
         return prior_model, model_uninitialized, obs
-    
+    # Apply user-defined modifications
     prior_model = model_options.modify_func(prior_model, model_options.modify_func_input)
     
+    # This bit is used in special flows, not during submission
     if 'starting_par' in data.diagnostics.keys():
         prior_model.m['signal'].set_parameters(data.diagnostics['starting_par'])
 
@@ -364,10 +306,6 @@ def fit_gp(data, plot_final=False, plot_simple=False, model_options=ModelOptions
         if not model_options.use_training_labels:
             model.m['signal'].m['transit'].depth_model.m['variation'].scaling_factor = \
                 np.max((model_options.min_transit_scaling_factor, model.m['signal'].m['transit'].depth_model.m['variation'].scaling_factor))
-        if model_options.unregularize_transit:
-            model.m['signal'].m['transit'].std_values = [1000*x for x in model.m['signal'].m['transit'].std_values]
-            #model.m['signal'].m['transit'].std_values[2] = 0.1
-            #model.m['signal'].m['transit'].std_values[3] = 0.1
         return model        
     posterior_mean, posterior_samples = gp.solve_gp_nonlinear(prior_model, obs, rng=np.random.default_rng(seed=data.planet_id), \
         update_rate=model_options.update_rate, n_iter=model_options.n_iter, update_hyperparameters_from=0,\
@@ -392,18 +330,12 @@ Support functions and classes
 
 
 class PredictionModel(kgs.Model):
-    # Wrapper around the functionality in the model to match the interface defined by kgs.Model()
+    # Wrapper around fit_gp to match the interface defined by kgs.Model()
 
-    starter_model = None
+    starter_model = None # a model to find a good starting point for the Bayesian solver (set in constructor below)
     model_options = None # ModelOptions as defined earlier, configuring the model                                                  
-    plot_final = False
-    plot_simple = False
-    fixed_AIRS_sigma = None #400e-6 #
-    
-    # Diagnostics
-    results = None
-    
-    bad_sanity = False
+    plot_final = False # make diagnostic plots?
+    plot_simple = False # make only a few of the plots above?
 
     def __init__(self):
         super().__init__()
@@ -421,28 +353,9 @@ class PredictionModel(kgs.Model):
             assert test_data.is_train
             test_data.spectrum = test_data.diagnostics['training_spectrum']
         test_data.transits[0].load_to_step(5, test_data, self.loaders)
-        
-        if self.model_options.remove_ingress_egress:
-            def remove_ingress_egress(data, transit_params):
-                transit_params = copy.deepcopy(transit_params)
-                transit_params.u = [0 for x in transit_params.u]
-                light_curve = transit_params.light_curve(data.times.get()/3600)
-                plt.figure()
-                plt.plot(data.times.get()/3600, light_curve)
-                to_keep = ((light_curve == np.max(light_curve)) | (light_curve == np.min(light_curve)))
-                #plt.plot(to_keep)
-                data.data = data.data[to_keep, ...]
-                data.times = data.times[to_keep, ...]
-                data.time_intervals = data.time_intervals[to_keep, ...]
-                light_curve = transit_params.light_curve(data.times.get()/3600)
-                plt.plot(data.times.get()/3600, light_curve)
-                plt.pause(0.001)
-            remove_ingress_egress(test_data.transits[0].data[0],test_data.diagnostics['transit_params'][0])
-            remove_ingress_egress(test_data.transits[0].data[1],test_data.diagnostics['transit_params'][1])
-        
+                
         # Construct and fit the GP
         results = fit_gp(test_data, model_options=self.model_options, plot_final=self.plot_final, plot_simple=self.plot_simple)       
-        #self.results = results
 
         # Find where in the output we can find the desired transit depth values
         inds = kgs.ismembertol(kgs.wavelengths,results['model_mean'].m['signal'].m['transit'].wavelengths)
@@ -458,11 +371,8 @@ class PredictionModel(kgs.Model):
         sample_labels = results['model_samples'].m['signal'].m['transit'].depth_model.get_prediction(results['model_mean'].m['signal'].m['transit'].obs_wavelength)
         sample_labels = sample_labels[inds,:]-pred_labels[inds,0][:,np.newaxis]
         cov = (sample_labels@sample_labels.T)/sample_labels.shape[1]
-        
-        if self.fixed_AIRS_sigma is not None:
-            cov[1:,1:] = self.fixed_AIRS_sigma**2
 
-        # Sanity checks
+        # Sanity checks; these are meant to catch bad planets in the private test set
         kgs.sanity_check(np.mean, pred, 'pred_mean', 1, [0, 0.15])
         kgs.sanity_check(np.std, pred, 'pred_std', 2, [0, 0.02])
         if self.model_options.n_samples_sigma_est>50 and kgs.sanity_checks_active:
@@ -471,21 +381,16 @@ class PredictionModel(kgs.Model):
             kgs.sanity_check(np.max, sigma, 'sigma_max', 4, [7e-6, 0.002])
         results['model_mean'].m['signal'].m['transit'].transit_params[0][0].sanity_check('FGS_')
         results['model_mean'].m['signal'].m['transit'].transit_params[0][1].sanity_check('AIRS_')
-        kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['transit'].transit_params[0][1].t0, 't0_diff', 10, [-0.05,0.05])
-        if self.bad_sanity:
-            kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['transit'].transit_params[0][1].t0, 't0_diff_alt', 100, [0.,0.05])
-        
-
+        kgs.sanity_check(lambda x:x, results['model_mean'].m['signal'].m['transit'].transit_params[0][0].t0 - results['model_mean'].m['signal'].m['transit'].transit_params[0][1].t0, 't0_diff', 10, [-0.05,0.05])        
+        # Residual checks
         obs_noise = copy.deepcopy(results['obs'])
         obs_noise.labels = obs_noise.labels - results['model_mean'].m['signal'].get_prediction(obs_noise)
         noise_AIRS = obs_noise.export_matrix(True)
-        noise_FGS = obs_noise.export_matrix(False)
-        
+        noise_FGS = obs_noise.export_matrix(False)        
         residual = kgs.rms(noise_FGS)
         residual_filtered = ariel_numerics.estimate_noise_cp(cp.array(noise_FGS)).get()
         ratio = residual/residual_filtered
-        kgs.sanity_check(lambda x:x, ratio, 'residual_diff_FGS', 9, [0.95,1.1])
-        
+        kgs.sanity_check(lambda x:x, ratio, 'residual_diff_FGS', 9, [0.95,1.1])        
         for ii in range(5):
             this_part = np.mean(noise_AIRS[:,50*ii:50*(ii+1)],1)
             residual = kgs.rms(this_part)
@@ -494,10 +399,11 @@ class PredictionModel(kgs.Model):
             kgs.sanity_check(lambda x:x, ratio, 'residual_diff_AIRS', 11, [0.95,1.1])
             
         
-        
-
+        # Write main outputs
         test_data.spectrum = copy.deepcopy(pred)
         test_data.spectrum_cov = copy.deepcopy(cov)
+        
+        # Write some diagnostic info
         test_data.diagnostics['t0_diff'] = results['model_mean'].m['signal'].m['transit'].transit_params[0][1].t0 - results['model_mean'].m['signal'].m['transit'].transit_params[0][0].t0
         test_data.diagnostics['transit_params_gp'] = results['model_mean'].m['signal'].m['transit'].transit_params[0]
         test_data.diagnostics['transit_params_gp_par'] = results['model_mean'].m['signal'].m['transit'].get_parameters()[-results['model_mean'].m['signal'].m['transit'].number_of_extra_parameters:]
@@ -510,6 +416,7 @@ class PredictionModel(kgs.Model):
         except:
             pass
         
+        # Store model parameters if requested
         if self.model_options.output_model:
             test_data.diagnostics['par_mean'] = copy.deepcopy(results['model_mean'].m['signal'].get_parameters())
             test_data.diagnostics['par_samples'] = copy.deepcopy(results['model_samples'].m['signal'].get_parameters())
@@ -520,9 +427,9 @@ class PredictionModel(kgs.Model):
 class Observable(gp.Observable):
     # Casts the measued data in the form expected by the gp library
     # Specifically, the df propery will be a pandas dataframe, with one row per measurement, and columns:
-    # -time: timestamp
+    # -time: timestamp in hours
     # -wavelength: wavelength
-    # -points_ber_bin: number of frames that were binned for this measurement - needed for noise prior
+    # -time_interval: measurement duration for this datapoint - needed for noise prior
     # -is_AIRS: True for AIRS, False for FGS
     # Finally, the labels property will contain the actualy measured values per pixel.
     AIRS_shape = 0 # cache the shape of the AIRS matrix to be able to export it later
@@ -578,47 +485,43 @@ class Observable(gp.Observable):
             return np.reshape(self.labels[np.logical_not(self.df['is_AIRS']),instance], self.FGS_shape)
 
 def msqrtabs(x):
+    # Signed square root of absolute value
     return -np.sign(x)*np.sqrt(np.abs(x))
-
 def d_msqrtabs(x):    
-    deriv = -1.0 / (2.0 * np.sqrt(np.abs(x)))
-    #deriv[np.isclose(x, 0.0)] = np.nan  # undefined at zero
-    return deriv
+    # Derivative of above
+    return -1.0 / (2.0 * np.sqrt(np.abs(x)))
         
 class TransitModel(gp.Model): 
-    # Behaves exactly as its _model property, i.e. all calls get passed to it. Typically subclasses of this class will make it do something more interesting.
-    depth_model = []
+    # Manages modeling the transit window.
+    depth_model = None  # model that manages the transit depths per wavelength
     
+    # Various properties derived from the observable, cached during initialization
     obs_wavelength = None
     wavelengths = None
     is_AIRS = None
     inds_per_wavelength = None
     times_per_wavelength = None
     number_of_extra_parameters = 0
-    #base_values = None
     
     # Parameters
-    transit_params = None # list of lists, top level is instances, second level is FGS/AIRS
-    AIRS_u_slopes = None
+    transit_params = None # list of lists of ariel_transit.TransitParams, top level is instances, second level is FGS/AIRS
+    AIRS_u_slopes = None # stores the linear dependence of u on wavelength for AIRS
     
     # Configuration
-    common_parameters = None
-    Rp_parameter = 4
-    std_values = None
-    fit_slopes = True
-    cov_override = None
-    mu_override = None
-    TS_slopes = None
-    
+    common_parameters = None # Which parameter numbers in transit_params are common between FGS and AIRS? Set below
+    Rp_parameter = 4 # Which parameter number corresponds to the transit depth?
+    std_values = None # See get_prior_distribution_internal; set below
+    fit_slopes = True # Whether to fit linear dependence of limb darkening parameters on wavelength for AIRS
+    cov_prior = None # Prior covariance matrix for transit parameters; set below
+    mu_prior = None # Prior mean for transit parameters; set below
     
     def __post_init__(self):
         super().__post_init__()
-        self.common_parameters = [0,1,2,3] 
+        self.common_parameters = [1,2,3] # all parameters are common, except t0 (seems clocks are not synchronized...) and limb darkening
         self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1., 1., 1.]        
         self.AIRS_u_slopes = [[0,0]]
-        self.cov_override, self.mu_override = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning28.pickle')
-        #self.transit_params = [[ariel_transit.TransitParams(), ariel_transit.TransitParams()]]
-
+        self.cov_prior, self.mu_prior = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning28.pickle')
+        # Note that the prior above cannot be used if the number or definition of parameters is changed, such as by setting fit_slopes to False.
     
     def _check_constraints(self):
         assert isinstance(self.depth_model, gp.Model)
@@ -630,6 +533,40 @@ class TransitModel(gp.Model):
         assert (self.number_of_instances==self.depth_model.number_of_instances)
         self.depth_model.check_constraints()
         super()._check_constraints()
+        
+    def get_prediction_internal(self,obs):
+        # The key function: find the transit window from the stored parameters.
+        # Everything else in this class is basically built around this.
+        
+        # Initialize output
+        output = np.zeros((self.number_of_observations, self.number_of_instances))        
+        
+        # Find transit depths from depth_model
+        transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
+        
+        # Compute transit windows
+        mean_wavelength = np.mean(self.wavelengths) # should be taking mean over AIRS wavelengths only - unfixed bug
+        for i_instance in range(self.number_of_instances): # loop over samples of the posterior (number_of_instances will be 1 if we are a prior or a posterior mean)
+            for i_wavelength in range(len(self.wavelengths)): # loop over wavelengths
+                # Compute transit window for this sample and wavelength
+                # Set up transit parameters
+                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength].astype(int)]
+                this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
+                old_u = copy.deepcopy(this_transit_params.u)
+                if self.fit_slopes and self.is_AIRS[i_wavelength]:
+                    for ii in range(len(this_transit_params.u)):
+                        this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-mean_wavelength)*self.AIRS_u_slopes[i_instance][ii]
+                        
+                # Compute and store light curve
+                light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
+                output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
+                
+                # Restore transit parameters for next round
+                this_transit_params.Rp = None
+                this_transit_params.u = old_u
+            
+        return output
+
 
     def initialize_internal(self,obs,number_of_instances):
         self.depth_model.comment = self.comment
@@ -649,23 +586,27 @@ class TransitModel(gp.Model):
             self.is_AIRS.append(is_AIRS[self.inds_per_wavelength[-1][0]])
         n_obs = obs.number_of_observations
         
+        # Set up an observable with just wavelengths in it, for use in depth_model
         self.obs_wavelength = Observable()
         self.obs_wavelength.df = pd.DataFrame({'wavelength': self.wavelengths, 'is_AIRS': self.is_AIRS})
         self.obs_wavelength.labels = np.zeros((len(self.wavelengths),1))
         
+        # Initialize depth_mdoel
         self.depth_model.initialize(self.obs_wavelength, number_of_instances)
+        
+        # Count parameters
         self.number_of_extra_parameters = len(self.transit_params[0][0].to_x()) + len(self.transit_params[0][1].to_x()) - 2 - len(self.common_parameters) + len(self.transit_params[0][1].u)*self.fit_slopes
-        self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
+        self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters        
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
         
         self.number_of_instances = 1
-        #self.base_values = self.get_parameters()[self.depth_model.number_of_parameters:,0]
 
     def set_parameters_internal(self, to_what):
         # Start filling from depth_model
         self.depth_model.set_parameters(to_what[:self.depth_model.number_of_parameters, :])
   
+        # Set up base transit parameters
         base_params = self.transit_params[0]
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
         if self.fit_slopes:
@@ -709,6 +650,7 @@ class TransitModel(gp.Model):
             assert cur_pos == self.number_of_parameters
         
     def get_parameters_internal(self):
+        # Inverse of above...
         x = np.zeros((self.number_of_parameters, self.number_of_instances))        
         x[:self.depth_model.number_of_parameters,:] = self.depth_model.get_parameters()        
         for i_instance in range(self.number_of_instances):            
@@ -742,13 +684,13 @@ class TransitModel(gp.Model):
 
     
     def get_observation_relationship_internal(self,obs):
-        #print(self.get_parameters()[self.depth_model.number_of_parameters:])
+        # Compute the design matrix; linearized version of get_prediction_internal
+        # Uses finite difference (I didn't know about pylightcurve-torch...)
+
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_prior_distribution=False)
         transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
         
         # Design matrix for transit depth parameters
-        #design_matrix_rp = np.zeros((self.number_of_observations, len(self.wavelengths)))
-        #print(design_matrix_rp.shape)
         rows = []
         cols = []
         vals = []
@@ -763,11 +705,8 @@ class TransitModel(gp.Model):
             vals.append(derivatives[0] * d_msqrtabs(transit_depths[i_wavelength, 0]))
             rows.append(self.inds_per_wavelength[i_wavelength])
             cols.append([i_wavelength]*len(vals[-1]))
-            #print(val.shape)                                            
-            #design_matrix_rp[self.inds_per_wavelength[i_wavelength], i_wavelength] = val
             this_transit_params.Rp = None
         design_matrix_rp = gp.sparse_matrix( (np.concatenate(vals), (np.concatenate(rows),np.concatenate(cols))), (self.number_of_observations, len(self.wavelengths)) )
-        #design_matrix_rp = gp.sparse_matrix(design_matrix_rp) 
         design_matrix_rp = design_matrix_rp @ prior_matrices.design_matrix
 
         
@@ -793,8 +732,10 @@ class TransitModel(gp.Model):
         return prior_matrices
 
     def get_prior_distribution_internal(self,obs):
+        # Defines the prior distribution, i.e. mean and precision matrix (inverse of covariance matrix)
         prior_matrices = self.depth_model.get_prior_matrices(self.obs_wavelength, get_observation_relationship=False) 
         
+        # Determine regularization around current value - used to prevent large updates
         sigma_values = []
         transit_x0 = self.transit_params[0][0].to_x()
         n_params1 = len(self.transit_params[0][0].to_x())
@@ -812,56 +753,29 @@ class TransitModel(gp.Model):
             for ii in range(len(self.AIRS_u_slopes[0])):
                 sigma_values.append(self.std_values[-1])
                     
-        if self.cov_override is None:
-
+        if self.cov_prior is None:
+            # If cov_prior is not defined, we use the above to determine the transit parameter prior, and still need to combine it with the transit depth prior
             prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
                 prior_matrices.prior_precision_matrix ,  sp.sparse.diags(1/np.array(sigma_values)**2, format=gp.sparse_matrix_str)
                 ], format=gp.sparse_matrix_str )
-
             prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, self.get_parameters()[self.depth_model.number_of_parameters:,0]])
         else:
-            # plt.figure()
-            # plt.plot(sigma_values)
-            # plt.plot(np.sqrt(np.diag(self.cov_override)))
-            # plt.pause(0.001)
-            cov = copy.deepcopy(self.cov_override)
-            mu = copy.deepcopy(self.mu_override)
+            # We use the prior specified by cov_prior, overriding it with the regularization above if it is stricter
+            cov = copy.deepcopy(self.cov_prior)
+            mu = copy.deepcopy(self.mu_prior)
             for ii in range(cov.shape[0]):
                 if np.sqrt(np.diag(cov))[ii] > sigma_values[ii]:
                     cov[ii,:] = 0
                     cov[:,ii] = 0
                     cov[ii,ii] = sigma_values[ii]**2
                     mu[ii] =  self.get_parameters()[self.depth_model.number_of_parameters+ii,0]
+            # Combine with transit depth prior
             prior_matrices.prior_precision_matrix  = sp.sparse.block_diag([
                 prior_matrices.prior_precision_matrix , gp.sparse_matrix(np.linalg.inv(cov))
                 ], format=gp.sparse_matrix_str )
-            if self.TS_slopes is not None:
-                mu += self.TS_slopes * self.transit_params[0][0].Ts
-                assert self.transit_params[0][0].Ts == self.transit_params[0][1].Ts
             prior_matrices.prior_mean = np.concatenate([prior_matrices.prior_mean, mu])            
-                
-            #print('prior_mean', prior_matrices.prior_mean)
         prior_matrices.number_of_parameters = self.number_of_parameters
         return prior_matrices
-
-    def get_prediction_internal(self,obs):
-        output = np.zeros((self.number_of_observations, self.number_of_instances))        
-        transit_depths = self.depth_model.get_prediction(self.obs_wavelength)
-        mean_wavelength = np.mean(self.wavelengths) # should be taking mean over AIRS wavelengths only
-        for i_instance in range(self.number_of_instances):
-            for i_wavelength in range(len(self.wavelengths)):
-                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength].astype(int)]
-                this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
-                old_u = copy.deepcopy(this_transit_params.u)
-                if self.fit_slopes and self.is_AIRS[i_wavelength]:
-                    for ii in range(len(this_transit_params.u)):
-                        this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-mean_wavelength)*self.AIRS_u_slopes[i_instance][ii]
-                light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
-                output[self.inds_per_wavelength[i_wavelength], i_instance] = light_curve
-                this_transit_params.Rp = None
-                this_transit_params.u = old_u
-            
-        return output
 
     def is_linear(self):
         return False
@@ -975,13 +889,6 @@ class ModelSplitSensors(gp.CompoundNamed):
         res[obs.df['is_AIRS'],:] = self.m['AIRS'].get_prediction(obs_AIRS)
         res[np.logical_not(obs.df['is_AIRS']),:] = self.m['FGS'].get_prediction(obs_FGS)
         return res
-
-def init_drift_sigmas(lengths):
-    # defaults used when tuning hyperparameters; this function is used in define_prior
-    sigmas = [1e-4 for x in lengths]
-    sigmas.append(1e-7)
-    return np.array(sigmas)
-
 
 
 '''
@@ -1222,7 +1129,7 @@ def visualize_gp(obs, posterior_mean, posterior_samples, data, model_options, si
 
     if 'spectral' in posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m:
         plt.sca(ax[1])
-        obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['spectral'].get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
+        obs_AIRS.labels = posterior_mean.m['signal'].m['drift'].m['AIRS'].model.drift_model_AIRS_inner.get_prediction(obs_AIRS) #+posterior_mean.m['signal'].m['drift'].m['AIRS'].model.m['average'].get_prediction(obs_AIRS)
         plt.imshow(obs_AIRS.export_matrix(True), interpolation='none', aspect='auto')
         plt.colorbar()
         plt.title('Spectral drift (AIRS)')
