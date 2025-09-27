@@ -55,7 +55,7 @@ class ModelOptions(kgs.BaseClass):
 
     # Configuration of the solver
     n_samples_sigma_est = 100 # how many samples to take to estimate the covariance matrix (and hence the sigma prediction)
-    n_iter = 8 # number of iterations for the non-linear solver
+    n_iter = 4 # number of iterations for the non-linear solver
     update_rate = 1 # update rate 
     max_log_update_hyperparameters = 1 # maximum update of log(hyperparameters) in each iteration
     
@@ -753,7 +753,7 @@ class TransitModel(gp.Model):
         cols = []
         vals = []
         for i_wavelength in range(len(self.wavelengths)):
-            this_transit_params = copy.deepcopy(self.transit_params[0][self.is_AIRS[i_wavelength]])
+            this_transit_params = copy.deepcopy(self.transit_params[0][self.is_AIRS[i_wavelength].astype(int)])
             this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, 0])
             if self.fit_slopes and self.is_AIRS[i_wavelength]:
                 for ii in range(len(this_transit_params.u)):
@@ -850,7 +850,7 @@ class TransitModel(gp.Model):
         mean_wavelength = np.mean(self.wavelengths) # should be taking mean over AIRS wavelengths only
         for i_instance in range(self.number_of_instances):
             for i_wavelength in range(len(self.wavelengths)):
-                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength]]
+                this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength].astype(int)]
                 this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
                 old_u = copy.deepcopy(this_transit_params.u)
                 if self.fit_slopes and self.is_AIRS[i_wavelength]:

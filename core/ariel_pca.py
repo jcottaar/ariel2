@@ -23,7 +23,7 @@ class PCA(kgs.Model):
         if self.learn_pca_during_training:
             spectra = np.array([d.spectrum for d in train_data])
             self._learn_pca(spectra)
-        self.model.train(train_data[:12])        
+        self.model.train(train_data)        
         
     
     def _infer(self,data):

@@ -529,7 +529,7 @@ class Compound(Model):
             for p in pred_per_model:
                 p[p==0] = 1e-50
             assert not np.any(np.array(pred_per_model)==0)
-            base_val = np.product(pred_per_model,axis=0)
+            base_val = np.prod(pred_per_model,axis=0)
             design_matrix_parts = [None for m in self.models]
             for i in range(len(self.models)):
                 other_val = base_val/pred_per_model[i]
@@ -569,7 +569,7 @@ class Compound(Model):
         if self.mode=='sum':
             return np.sum(res,axis=0) + self.offset
         else:
-            return np.product(res,axis=0) + self.offset
+            return np.prod(res,axis=0) + self.offset
  
     def is_linear(self):
         if self.mode=='sum':

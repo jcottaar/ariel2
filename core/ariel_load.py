@@ -568,7 +568,7 @@ def default_loaders():
     loaders[1].apply_time_binning.time_binning = 5
     loaders[1].apply_full_sensor_corrections.pca_options.n_components = 2
     loaders[1].apply_full_sensor_corrections.remove_background_based_on_rows = True
-    loaders[1].apply_full_sensor_corrections.inpainting_2d = True
+    loaders[1].apply_full_sensor_corrections.inpainting_wavelength = True
     loaders[1].apply_full_sensor_corrections.restore_invalids = True
     loaders[1].apply_wavelength_binning = ariel_load_AIRS.ApplyWavelengthBinningAIRS3()
      
