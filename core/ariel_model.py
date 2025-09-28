@@ -153,6 +153,78 @@ class Fudger(kgs.Model):
         return data
 
 @dataclass
+class FudgerSigmaOnly(kgs.Model):
+    model: kgs.Model = field(init=True, default=None) # The underlying model
+    
+    sigma_fudge = 1.
+    
+    # Internal helpers
+    _cached_planet_id = None
+    _cached_result = None
+    _disable_transforms = False
+    
+    def _to_x(self):
+        # Convert parameters to vector, for use in scipy.optimize
+        the_list = [self.sigma_fudge]
+        return np.reshape(the_list, (-1,))
+    def _from_x(self,x):
+        # Inverse of above
+        self.sigma_fudge = x[0]
+        assert np.all(self._to_x() == x)
+        
+    def alter_mats(self, mats):
+        # Apply all the fudges. This is done on matrix versions of the predictions for speed.
+        
+        y_true,y_pred,cov_pred = mats
+        
+        # Adapt sigma
+        cov_pred[...] *= self.sigma_fudge**2
+    
+    def _train(self,train_data):
+        
+        # Train underlying model
+        self.model.train(train_data)
+          
+        # Infer data with underlying model, and convert to matrices for faster handling
+        self.state=1    
+        self._disable_transforms = True # don't apply fudge just yet
+        inferred_data = self.infer(train_data)
+        self._disable_transforms = False
+        mats = kgs.data_to_mats(inferred_data,train_data)
+        
+        # Optimize fudge parameters
+        def cost(x):            
+            self._from_x(x)
+            mats_here = copy.deepcopy(mats)
+            self.alter_mats(mats_here)
+            res =-kgs.score_metric_fast(*mats_here)
+            return res
+        x0 = self._to_x()
+        res = scipy.optimize.minimize(cost,x0,tol=1e-2)
+        self._from_x(res.x)
+        
+    
+    def _infer(self,data):
+        
+        # Infer underlying model, using cache if possible
+        if self._cached_planet_id is not None and [d.planet_id for d in data]==self._cached_planet_id:
+            data = copy.deepcopy(self._cached_result)
+        else:
+            data = self.model.infer(data)
+            if self._cached_planet_id is None:
+                # Cache results in case we are training and inferring on the same data
+                self._cached_result = copy.deepcopy(data)
+                self._cached_planet_id = [d.planet_id for d in data]
+                
+        # Apply fudges
+        mats = kgs.data_to_mats(data,data)        
+        if not self._disable_transforms:
+            self.alter_mats(mats)
+        kgs.mats_to_data(data,copy.deepcopy(data),mats)
+            
+        return data
+    
+@dataclass
 class MultiTransit(kgs.Model):
     # Models multiple transits and averages them
     
