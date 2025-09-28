@@ -38,6 +38,8 @@ class ModelOptions(kgs.BaseClass):
     FGS_transit_scaling = 1. # Scales the FGS non-PCA prior; set by ariel_pca.py
     AIRS_transit_scaling = 1. # Scales the AIRS non-PCA prior; set by ariel_pca.py
     fit_u_slopes = True # Include linear dependence of limb darkening parameters on wavelength for AIRS
+    fit_u_quadratic = False
+    common_params = None
  
     # Configuration of the drift prior
     FGS_order = 3 # FGS polynomial order in time
@@ -60,6 +62,7 @@ class ModelOptions(kgs.BaseClass):
     def __post_init__(self):
         super().__post_init__()
         self.modify_func = lambda x,y:x
+        self.common_params = [1,2,3]
         
 
 def define_prior(obs, model_options, data):
@@ -215,6 +218,8 @@ def define_prior(obs, model_options, data):
     transit_model.c1 = 1e20 # tweak numerical check on derivatives that is difficult to get working
     transit_model.c2 = 1e20 # tweak numerical check on derivatives that is difficult to get working
     transit_model.fit_slopes = model_options.fit_u_slopes
+    transit_model.fit_quadratic = model_options.fit_u_quadratic
+    transit_model.common_parameters = model_options.common_params
     transit_model.depth_model = transit_depth_model # the transit depth model determined above
 
 
@@ -509,20 +514,23 @@ class TransitModel(gp.Model):
     # Parameters
     transit_params = None # list of lists of ariel_transit.TransitParams, top level is instances, second level is FGS/AIRS
     AIRS_u_slopes = None # stores the linear dependence of u on wavelength for AIRS
+    AIRS_u_quadratic = None
     
     # Configuration
     common_parameters = None # Which parameter numbers in transit_params are common between FGS and AIRS? Set below
     Rp_parameter = 4 # Which parameter number corresponds to the transit depth?
     std_values = None # See get_prior_distribution_internal; set below
     fit_slopes = True # Whether to fit linear dependence of limb darkening parameters on wavelength for AIRS
+    fit_quadratic = False
     cov_prior = None # Prior covariance matrix for transit parameters; set below
     mu_prior = None # Prior mean for transit parameters; set below
     
     def __post_init__(self):
         super().__post_init__()
         self.common_parameters = [1,2,3] # all parameters are common, except t0 (seems clocks are not synchronized...) and limb darkening
-        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1., 1., 1.]        
+        self.std_values = [1., 1., 0.01, 0.1, np.nan, 0.101, 0.102, 1., 1., 1., 1., 1.]        
         self.AIRS_u_slopes = [[0,0]]
+        self.AIRS_u_quadratic = [[0,0]]
         self.cov_prior, self.mu_prior = kgs.dill_load(kgs.calibration_dir + 'transit_model_tuning28.pickle')
         # Note that the prior above cannot be used if the number or definition of parameters is changed, such as by setting fit_slopes to False.
         # This prior was determind using expectation maximization. See "tune_transit_hyperparameters.ipynb" in the main branch for details.
@@ -557,9 +565,10 @@ class TransitModel(gp.Model):
                 this_transit_params = self.transit_params[i_instance][self.is_AIRS[i_wavelength].astype(int)]
                 this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, i_instance])
                 old_u = copy.deepcopy(this_transit_params.u)
-                if self.fit_slopes and self.is_AIRS[i_wavelength]:
+                if self.is_AIRS[i_wavelength]:
                     for ii in range(len(this_transit_params.u)):
                         this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-mean_wavelength)*self.AIRS_u_slopes[i_instance][ii]
+                        this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-mean_wavelength)**2*self.AIRS_u_quadratic[i_instance][ii]
                         
                 # Compute and store light curve
                 light_curve = this_transit_params.light_curve(self.times_per_wavelength[i_wavelength])
@@ -599,7 +608,7 @@ class TransitModel(gp.Model):
         self.depth_model.initialize(self.obs_wavelength, number_of_instances)
         
         # Count parameters
-        self.number_of_extra_parameters = len(self.transit_params[0][0].to_x()) + len(self.transit_params[0][1].to_x()) - 2 - len(self.common_parameters) + len(self.transit_params[0][1].u)*self.fit_slopes
+        self.number_of_extra_parameters = len(self.transit_params[0][0].to_x()) + len(self.transit_params[0][1].to_x()) - 2 - len(self.common_parameters) + len(self.transit_params[0][1].u)*self.fit_slopes + len(self.transit_params[0][1].u)*self.fit_quadratic
         # -2 because of 2*Rp, -len(self.common_parameters) to prevent double counting
         self.number_of_parameters = self.depth_model.number_of_parameters + self.number_of_extra_parameters        
         self.number_of_hyperparameters = self.depth_model.number_of_hyperparameters
@@ -615,6 +624,8 @@ class TransitModel(gp.Model):
         self.transit_params = [copy.deepcopy(base_params) for _ in range(self.number_of_instances)]
         if self.fit_slopes:
             self.AIRS_u_slopes = [copy.deepcopy(self.AIRS_u_slopes[0]) for _ in range(self.number_of_instances)]
+        if self.fit_quadratic:
+            self.AIRS_u_quadratic = [copy.deepcopy(self.AIRS_u_quadratic[0]) for _ in range(self.number_of_instances)]
   
         # Loop over each instance and rebuild transit_params
         n_params1 = len(self.transit_params[0][0].to_x())
@@ -650,6 +661,10 @@ class TransitModel(gp.Model):
             if self.fit_slopes:                
                 self.AIRS_u_slopes[i_instance] = list(to_what[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]), i_instance])
                 cur_pos += len(self.AIRS_u_slopes[0])
+                
+            if self.fit_quadratic:                
+                self.AIRS_u_quadratic[i_instance] = list(to_what[cur_pos:cur_pos+len(self.AIRS_u_quadratic[0]), i_instance])
+                cur_pos += len(self.AIRS_u_quadratic[0])
             
             assert cur_pos == self.number_of_parameters
         
@@ -676,6 +691,9 @@ class TransitModel(gp.Model):
             if self.fit_slopes:
                 x[cur_pos:cur_pos+len(self.AIRS_u_slopes[0]),i_instance] = self.AIRS_u_slopes[i_instance]
                 cur_pos+=len(self.AIRS_u_slopes[0])
+            if self.fit_quadratic:
+                x[cur_pos:cur_pos+len(self.AIRS_u_quadratic[0]),i_instance] = self.AIRS_u_quadratic[i_instance]
+                cur_pos+=len(self.AIRS_u_quadratic[0])
             
             assert(cur_pos==self.number_of_parameters)
         return x
@@ -701,10 +719,11 @@ class TransitModel(gp.Model):
         for i_wavelength in range(len(self.wavelengths)):
             this_transit_params = copy.deepcopy(self.transit_params[0][self.is_AIRS[i_wavelength].astype(int)])
             this_transit_params.Rp = msqrtabs(transit_depths[i_wavelength, 0])
-            if self.fit_slopes and self.is_AIRS[i_wavelength]:
+            if self.is_AIRS[i_wavelength]:
                 for ii in range(len(this_transit_params.u)):
                     #pass
                     this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-np.mean(self.wavelengths[self.is_AIRS[i_wavelength]]))*self.AIRS_u_slopes[0][ii]
+                    this_transit_params.u[ii] += (self.wavelengths[i_wavelength]-np.mean(self.wavelengths[self.is_AIRS[i_wavelength]]))**2*self.AIRS_u_quadratic[0][ii]
             derivatives = this_transit_params.light_curve_derivatives(self.times_per_wavelength[i_wavelength], [self.Rp_parameter])
             vals.append(derivatives[0] * d_msqrtabs(transit_depths[i_wavelength, 0]))
             rows.append(self.inds_per_wavelength[i_wavelength])
@@ -755,6 +774,9 @@ class TransitModel(gp.Model):
                     sigma_values.append(self.std_values[i_param])
         if self.fit_slopes:
             for ii in range(len(self.AIRS_u_slopes[0])):
+                sigma_values.append(self.std_values[-1])
+        if self.fit_quadratic:
+            for ii in range(len(self.AIRS_u_quadratic[0])):
                 sigma_values.append(self.std_values[-1])
                     
         if self.cov_prior is None:
