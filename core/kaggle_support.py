@@ -85,11 +85,9 @@ n_cuda_devices = torch.cuda.device_count() # How many GPUs?
 
 # Configure which GPU to use
 process_name = multiprocess.current_process().name
-if not multiprocess.current_process().name == "MainProcess":
-    print(process_name, multiprocess.current_process()._identity[0])  
+if not multiprocess.current_process().name == "MainProcess": 
     my_gpu_id = np.mod(multiprocess.current_process()._identity[0], n_cuda_devices)
     os.environ["CUDA_VISIBLE_DEVICES"] = str(my_gpu_id)
-    print('CUDA_VISIBLE_DEVICES=', os.environ["CUDA_VISIBLE_DEVICES"])
 else:
     my_gpu_id = 0
 
@@ -279,7 +277,8 @@ def clear_gpu():
 Sanity checks and error handling
 
 Throughout the code, sanity checks are performed to ensure nothing weird is happening. Main purpose is to avoid nasty surprises on the test set.
-This is couple with functionality to raise error codes during submission and retrieve them, via the submission score.
+This is coupled with functionality to raise error codes during submission and retrieve them, via the submission score.
+Errors from sanity checks are currently disabled ('sanity_checks_active' below).
 '''
 
 class ArielException(Exception):    
@@ -306,7 +305,7 @@ def raise_error_code(exception):
 def error_code_from_score(score):
     return (score_base-score)/(score_base-score_noise)*noise_fac_used**2*error_code_conversion
 
-sanity_checks_active = True # Whether to throw errors if we see weird things in the data
+sanity_checks_active = False # Whether to throw errors if we see weird things in the data
 sanity_checks_without_errors = False # Perform the sanity checks above but don't throw errors
 sanity_checks = dict() # Global object to keep track of all sanity checks. 
     

@@ -343,7 +343,6 @@ class SimpleModelChainer(kgs.Model):
                 d.transits[0].data[1].time_intervals = d.transits[0].data[1].time_intervals[slic,...]
                 [alt_result, alt_score] = try_one(d, True)
                 if np.abs(alt_score-1)<0.5*(np.abs(score-1)):
-                    print(f'Chop used on planet id {result.planet_id}')
                     result.diagnostics['chopped'] = True
                     result = alt_result
                     score = alt_score
